@@ -1,0 +1,22 @@
+# Compiled binary
+mgnt-server
+
+# Runtime data (credentials, TLS certs, server registry)
+data/
+
+# Legacy config (replaced by data/.env)
+config.json
+
+# Any stray env files
+.env
+*.env
+
+# Go build cache
+*.test
+*.out
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo

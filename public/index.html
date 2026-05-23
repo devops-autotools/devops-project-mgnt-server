@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Server Management Dashboard</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome for Premium Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="/css/style.css?v=2">
+</head>
+<body>
+    <!-- Background glowing decorative blobs -->
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast hidden">
+        <i class="fa-solid fa-circle-check toast-icon"></i>
+        <span id="toast-message">Notification</span>
+    </div>
+
+    <!-- ================= AUTH CONTAINER (LOGIN) ================= -->
+    <div id="auth-container" class="auth-container">
+        <div class="login-card">
+            <div class="login-header">
+                <div class="logo-icon-large">
+                    <i class="fa-solid fa-shield-halved"></i>
+                </div>
+                <h2>SECURE MONITORING PORTAL</h2>
+                <p>Encrypted Outbound Telemetry Channel</p>
+            </div>
+            
+            <form id="login-form">
+                <div class="form-group">
+                    <label for="username"><i class="fa-solid fa-user"></i> Username</label>
+                    <input type="text" id="username" placeholder="Enter administrator username..." required autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label for="password"><i class="fa-solid fa-lock"></i> Password</label>
+                    <input type="password" id="password" placeholder="Enter password..." required autocomplete="current-password">
+                </div>
+                
+                <div id="login-error" class="error-msg hidden">
+                    <i class="fa-solid fa-circle-exclamation"></i>
+                    <span id="error-text">Username or password incorrect</span>
+                </div>
+                
+                <button type="submit" class="btn btn-primary btn-block">
+                    <span>Sign In Portal</span>
+                    <i class="fa-solid fa-arrow-right-to-bracket"></i>
+                </button>
+            </form>
+            
+            <div class="login-footer">
+                <p><i class="fa-solid fa-circle-info"></i> Decoupled Secure Agents • Port 22 Bypassed</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= MAIN DASHBOARD CONTAINER ================= -->
+    <div id="main-container" class="main-container hidden">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <i class="fa-solid fa-shield-halved logo-icon"></i>
+                <div class="brand-text">
+                    <h3>SECURE MGNT</h3>
+                    <span>Server Monitoring</span>
+                </div>
+            </div>
+            
+            <nav class="sidebar-menu">
+                <button class="menu-item active" data-target="page-dashboard">
+                    <i class="fa-solid fa-chart-line"></i>
+                    <span>Dashboard</span>
+                </button>
+                <button class="menu-item" data-target="page-servers">
+                    <i class="fa-solid fa-server"></i>
+                    <span>Servers List</span>
+                </button>
+            </nav>
+            
+            <div class="sidebar-footer">
+                <div class="admin-profile">
+                    <div class="avatar"><i class="fa-solid fa-user-shield"></i></div>
+                    <div class="profile-info">
+                        <span class="role">Administrator</span>
+                        <span class="status-indicator online">Online</span>
+                    </div>
+                </div>
+                <button id="btn-logout" class="btn btn-logout">
+                    <i class="fa-solid fa-right-from-bracket"></i>
+                    <span>Sign Out</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Workspace Content -->
+        <main class="workspace">
+            <header class="workspace-header">
+                <div class="header-title">
+                    <h1 id="page-title">Infrastructure Health</h1>
+                    <p id="page-subtitle" class="text-muted">Real-time telemetry, active host statuses, and metric aggregations.</p>
+                </div>
+                <div class="header-actions">
+                    <button class="btn btn-primary" id="btn-add-server-trigger">
+                        <i class="fa-solid fa-plus"></i>
+                        <span>Add New Server</span>
+                    </button>
+                </div>
+            </header>
+
+            <!-- ================= VIEW 1: DASHBOARD OVERVIEW ================= -->
+            <section id="page-dashboard" class="page-view">
+                <!-- Overview Stats Grid -->
+                <div class="stats-overview-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon bg-primary">
+                            <i class="fa-solid fa-server"></i>
+                        </div>
+                        <div class="stat-details">
+                            <h3 id="stat-total-servers">0</h3>
+                            <span>Total Servers</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon bg-success">
+                            <i class="fa-solid fa-circle-check"></i>
+                        </div>
+                        <div class="stat-details">
+                            <h3 id="stat-online-servers">0</h3>
+                            <span>Online</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon bg-danger">
+                            <i class="fa-solid fa-circle-xmark"></i>
+                        </div>
+                        <div class="stat-details">
+                            <h3 id="stat-offline-servers">0</h3>
+                            <span>Offline</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon bg-warning">
+                            <i class="fa-solid fa-microchip"></i>
+                        </div>
+                        <div class="stat-details">
+                            <h3 id="stat-avg-cpu">0%</h3>
+                            <span>Avg CPU</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon bg-info">
+                            <i class="fa-solid fa-memory"></i>
+                        </div>
+                        <div class="stat-details">
+                            <h3 id="stat-avg-ram">0%</h3>
+                            <span>Avg RAM</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Servers Cards Grid -->
+                <div class="section-title-wrapper">
+                    <h2><i class="fa-solid fa-square-poll-vertical"></i> Live Telemetry Grid</h2>
+                    <span class="refresh-indicator"><i class="fa-solid fa-arrows-rotate fa-spin"></i> Polling every 5 seconds</span>
+                </div>
+
+                <div id="servers-status-grid" class="servers-status-grid">
+                    <!-- Dynamic server cards go here -->
+                    <div class="no-data-card" id="dashboard-empty-state">
+                        <i class="fa-solid fa-server-slash icon"></i>
+                        <h3>No active server connections</h3>
+                        <p class="text-muted">Generate a secure connection token and provision the agent on your target server.</p>
+                        <button class="btn btn-primary btn-sm btn-add-first-server">
+                            <i class="fa-solid fa-plus"></i> Add Server Now
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================= VIEW 2: SERVERS LIST ================= -->
+            <section id="page-servers" class="page-view hidden">
+                <!-- Tag filter bar -->
+                <div class="tag-filter-bar card">
+                    <div id="tag-filter-pills" class="tag-filter-pills">
+                        <!-- Rendered by JS -->
+                    </div>
+                    <button class="btn btn-secondary btn-sm" id="btn-manage-tags">
+                        <i class="fa-solid fa-tags"></i> Manage Tags
+                    </button>
+                </div>
+
+                <div class="table-container card">
+                    <table class="server-table">
+                        <thead>
+                            <tr>
+                                <th>Server Name</th>
+                                <th>IP Address</th>
+                                <th>OS</th>
+                                <th>Status</th>
+                                <th>CPU</th>
+                                <th>RAM</th>
+                                <th>Disk</th>
+                                <th>Uptime</th>
+                                <th>Last Seen</th>
+                                <th>Tags</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="servers-table-body">
+                            <!-- Dynamic rows go here -->
+                        </tbody>
+                    </table>
+
+                    <div class="no-data-table hidden" id="table-empty-state">
+                        <i class="fa-solid fa-folder-open icon"></i>
+                        <p>Server list is empty. Add a new server instance to start monitoring.</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================= VIEW 3: SERVER DETAIL METRICS ================= -->
+            <section id="page-server-detail" class="page-view hidden">
+                <div class="back-link-wrapper">
+                    <button class="btn btn-secondary btn-sm" id="btn-back-to-dashboard">
+                        <i class="fa-solid fa-arrow-left"></i>
+                        <span>Back to Dashboard</span>
+                    </button>
+                </div>
+
+                <div class="server-detail-header card">
+                    <div class="detail-header-main">
+                        <div class="detail-server-icon">
+                            <i class="fa-solid fa-server"></i>
+                        </div>
+                        <div>
+                            <h2 id="detail-server-name">Web-Server-01</h2>
+                            <div class="detail-meta-row">
+                                <span class="badge" id="detail-status-badge">Online</span>
+                                <span><i class="fa-solid fa-network-wired"></i> <span id="detail-ip">192.168.1.15</span></span>
+                                <span><i class="fa-solid fa-clock"></i> Uptime: <span id="detail-uptime">2 days</span></span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="detail-header-os">
+                        <i class="fa-brands fa-linux os-icon"></i>
+                        <span id="detail-os">Ubuntu 22.04.2 LTS</span>
+                    </div>
+                </div>
+
+                <!-- Metrics Gauge Section -->
+                <div class="metrics-detail-grid">
+                    <!-- CPU Gauge Card -->
+                    <div class="metric-gauge-card card">
+                        <div class="card-header">
+                            <h3><i class="fa-solid fa-microchip"></i> CPU Usage</h3>
+                            <span class="value-highlight" id="gauge-cpu-val">0%</span>
+                        </div>
+                        <div class="gauge-wrapper">
+                            <div class="progress-ring-container">
+                                <svg class="progress-ring" width="200" height="200">
+                                    <circle class="progress-ring-bg" stroke="#1e293b" stroke-width="14" fill="transparent" r="85" cx="100" cy="100"/>
+                                    <circle class="progress-ring-bar" id="ring-cpu" stroke="url(#cpuGrad)" stroke-dasharray="534" stroke-dashoffset="534" stroke-width="14" stroke-linecap="round" fill="transparent" r="85" cx="100" cy="100"/>
+                                    <defs>
+                                        <linearGradient id="cpuGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                                            <stop offset="0%" stop-color="#38bdf8" />
+                                            <stop offset="100%" stop-color="#3b82f6" />
+                                        </linearGradient>
+                                    </defs>
+                                </svg>
+                                <div class="gauge-center-text">
+                                    <h4 id="gauge-cpu-percent">0%</h4>
+                                    <span>CPU Load</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="gauge-info-list">
+                            <div class="info-item">
+                                <span class="label">Processor Model:</span>
+                                <span class="value" id="detail-cpu-model">Intel Xeon Platinum</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="label">Cores:</span>
+                                <span class="value" id="detail-cpu-cores">4 Cores</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- RAM Gauge Card -->
+                    <div class="metric-gauge-card card">
+                        <div class="card-header">
+                            <h3><i class="fa-solid fa-memory"></i> RAM Usage</h3>
+                            <span class="value-highlight" id="gauge-ram-val">0%</span>
+                        </div>
+                        <div class="gauge-wrapper">
+                            <div class="progress-ring-container">
+                                <svg class="progress-ring" width="200" height="200">
+                                    <circle class="progress-ring-bg" stroke="#1e293b" stroke-width="14" fill="transparent" r="85" cx="100" cy="100"/>
+                                    <circle class="progress-ring-bar" id="ring-ram" stroke="url(#ramGrad)" stroke-dasharray="534" stroke-dashoffset="534" stroke-width="14" stroke-linecap="round" fill="transparent" r="85" cx="100" cy="100"/>
+                                    <defs>
+                                        <linearGradient id="ramGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                                            <stop offset="0%" stop-color="#a855f7" />
+                                            <stop offset="100%" stop-color="#ec4899" />
+                                        </linearGradient>
+                                    </defs>
+                                </svg>
+                                <div class="gauge-center-text">
+                                    <h4 id="gauge-ram-percent">0%</h4>
+                                    <span>RAM Memory</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="gauge-info-list">
+                            <div class="info-item">
+                                <span class="label">Used Memory:</span>
+                                <span class="value" id="detail-ram-used">0 GB</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="label">Free Memory:</span>
+                                <span class="value" id="detail-ram-free">0 GB</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="label">Total Capacity:</span>
+                                <span class="value" id="detail-ram-total">0 GB</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Disk Gauge Card -->
+                    <div class="metric-gauge-card card">
+                        <div class="card-header">
+                            <h3><i class="fa-solid fa-hard-drive"></i> Disk Usage</h3>
+                            <span class="value-highlight" id="gauge-disk-val">0%</span>
+                        </div>
+                        <div class="gauge-wrapper">
+                            <div class="progress-ring-container">
+                                <svg class="progress-ring" width="200" height="200">
+                                    <circle class="progress-ring-bg" stroke="#1e293b" stroke-width="14" fill="transparent" r="85" cx="100" cy="100"/>
+                                    <circle class="progress-ring-bar" id="ring-disk" stroke="url(#diskGrad)" stroke-dasharray="534" stroke-dashoffset="534" stroke-width="14" stroke-linecap="round" fill="transparent" r="85" cx="100" cy="100"/>
+                                    <defs>
+                                        <linearGradient id="diskGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                                            <stop offset="0%" stop-color="#10b981" />
+                                            <stop offset="100%" stop-color="#059669" />
+                                        </linearGradient>
+                                    </defs>
+                                </svg>
+                                <div class="gauge-center-text">
+                                    <h4 id="gauge-disk-percent">0%</h4>
+                                    <span>Storage</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="gauge-info-list">
+                            <div class="info-item">
+                                <span class="label">Used Space:</span>
+                                <span class="value" id="detail-disk-used">0 GB</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="label">Free Space:</span>
+                                <span class="value" id="detail-disk-free">0 GB</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="label">Total Disk Space:</span>
+                                <span class="value" id="detail-disk-total">0 GB</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- ================= ADD SERVER MODAL WIZARD ================= -->
+    <div id="add-server-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-server-plus"></i> Setup Connection Wizard</h3>
+                <button class="btn-close-modal" id="btn-close-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            
+            <div class="modal-body">
+                <!-- STEP 1: INPUT NAME -->
+                <div id="wizard-step-1" class="wizard-step">
+                    <p class="step-guide">Step 1: Enter a friendly name for your server instance.</p>
+                    <div class="form-group">
+                        <label for="new-server-name">Server Name (e.g. Server-DB-Production)</label>
+                        <input type="text" id="new-server-name" placeholder="Enter server name..." required>
+                    </div>
+                    <button class="btn btn-primary" id="btn-generate-agent-command">
+                        <span>Generate Token</span>
+                        <i class="fa-solid fa-gears"></i>
+                    </button>
+                </div>
+
+                <!-- STEP 2: INSTALLATION AND CONNECTION MONITORING -->
+                <div id="wizard-step-2" class="wizard-step hidden">
+                    <p class="step-guide"><i class="fa-solid fa-circle-info"></i> Step 2: Run the installation command below on your target server.</p>
+                    
+                    <div class="command-box">
+                        <div class="command-header">
+                            <span>SECURE AGENT INSTALLER SCRIPT</span>
+                            <button id="btn-copy-command" class="btn-copy">
+                                <i class="fa-solid fa-copy"></i> Copy
+                            </button>
+                        </div>
+                        <pre class="command-content"><code id="agent-command-text">curl -fsSL http://localhost:8080/agent/install/xyz123 | bash</code></pre>
+                    </div>
+                    
+                    <div class="security-note">
+                        <i class="fa-solid fa-shield-halved text-success"></i>
+                        <div>
+                            <h5>Secure Connection Bypassing Port 22</h5>
+                            <p class="text-muted">The agent runs cleanly in the background as a system service, polling CPU, RAM, and Disk telemetry dynamically via secure HTTPS/HTTP POST.</p>
+                        </div>
+                    </div>
+
+                    <!-- Wait connection screen -->
+                    <div class="connection-status-panel">
+                        <div class="status-loader-wrapper" id="connection-loader">
+                            <div class="spinner"></div>
+                            <h4>Awaiting target server handshake...</h4>
+                            <p class="text-muted">Please log into your target server, execute the curl script, and keep this page open.</p>
+                        </div>
+                        
+                        <div class="status-success-wrapper hidden" id="connection-success">
+                            <div class="success-icon-check">
+                                <i class="fa-solid fa-circle-check"></i>
+                            </div>
+                            <h4>SERVER SYNC SUCCESSFUL!</h4>
+                            <p class="text-muted" id="connected-server-feedback">Server "DB-Prod" has established telemetry connection.</p>
+                            <button class="btn btn-success" id="btn-finish-wizard">Finish Setup</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= SECURE WEB CONSOLE TERMINAL MODAL ================= -->
+    <div id="terminal-modal" class="modal-overlay hidden">
+        <div class="modal-card terminal-modal-card">
+            <!-- Titlebar mimics a real terminal window -->
+            <div class="terminal-titlebar">
+                <div class="terminal-dots">
+                    <span class="dot dot-red" onclick="closeTerminalModal()" title="Close"></span>
+                    <span class="dot dot-yellow"></span>
+                    <span class="dot dot-green"></span>
+                </div>
+                <div class="terminal-title-center">
+                    <i class="fa-solid fa-terminal"></i>
+                    <span id="terminal-title-label">bash — vcr-db-hni</span>
+                </div>
+                <div class="terminal-title-right">
+                    <span id="terminal-session-status" class="terminal-conn-badge">
+                        <span class="conn-dot"></span> Connected
+                    </span>
+                </div>
+            </div>
+
+            <!-- Terminal output body -->
+            <div class="terminal-body" id="terminal-output-logs" onclick="focusTerminalInput()">
+                <div class="terminal-welcome-line">Welcome to <span class="text-green">Secure Shell Gateway</span> — outbound polling, no inbound SSH required.</div>
+                <div class="terminal-welcome-line dim-text">Press <kbd>Enter</kbd> to execute. <kbd>↑</kbd><kbd>↓</kbd> history. <kbd>Tab</kbd> autocomplete. <kbd>Ctrl+L</kbd> clear.</div>
+                <div class="terminal-spacer"></div>
+            </div>
+
+            <!-- Input row + Tab completion suggestions -->
+            <div class="terminal-input-area">
+                <div id="terminal-suggestions" class="terminal-suggestions hidden"></div>
+                <div class="terminal-input-wrapper">
+                    <span class="terminal-live-prompt" id="terminal-prompt-label">user@host:~$</span>
+                    <input type="text" id="terminal-input" autocomplete="off" autocorrect="off" spellcheck="false" autofocus>
+                    <span class="terminal-cursor-blink" id="terminal-cursor-blink"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= MANAGE TAGS MODAL ================= -->
+    <div id="tags-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-tags"></i> Manage Tags</h3>
+                <button class="btn-close-modal" id="btn-close-tags-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Tag Name</label>
+                    <input type="text" id="new-tag-name" placeholder="e.g. production" maxlength="32">
+                </div>
+                <div class="form-group">
+                    <label>Color</label>
+                    <div class="tag-color-picker" id="tag-color-picker">
+                        <span class="color-dot selected" data-color="#ef4444" style="background:#ef4444"></span>
+                        <span class="color-dot" data-color="#f97316" style="background:#f97316"></span>
+                        <span class="color-dot" data-color="#eab308" style="background:#eab308"></span>
+                        <span class="color-dot" data-color="#22c55e" style="background:#22c55e"></span>
+                        <span class="color-dot" data-color="#14b8a6" style="background:#14b8a6"></span>
+                        <span class="color-dot" data-color="#3b82f6" style="background:#3b82f6"></span>
+                        <span class="color-dot" data-color="#6366f1" style="background:#6366f1"></span>
+                        <span class="color-dot" data-color="#a855f7" style="background:#a855f7"></span>
+                        <span class="color-dot" data-color="#ec4899" style="background:#ec4899"></span>
+                    </div>
+                </div>
+                <button class="btn btn-primary btn-sm" id="btn-create-tag">
+                    <i class="fa-solid fa-plus"></i> Add Tag
+                </button>
+                <hr style="border-color:rgba(255,255,255,0.08);margin:1.2rem 0;">
+                <div id="tags-list-container">
+                    <!-- Rendered by JS -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================= SERVER TAGS ASSIGN MODAL ================= -->
+    <div id="server-tags-modal" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:420px">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-tag"></i> Edit Server Tags</h3>
+                <button class="btn-close-modal" id="btn-close-server-tags-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted" id="server-tags-modal-subtitle" style="margin-bottom:1rem"></p>
+                <div id="server-tags-checklist" class="server-tags-checklist">
+                    <!-- Rendered by JS -->
+                </div>
+                <div style="margin-top:1.2rem">
+                    <button class="btn btn-primary" id="btn-save-server-tags">
+                        <i class="fa-solid fa-floppy-disk"></i> Save
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Logic Script -->
+    <script src="/js/app.js?v=2"></script>
+</body>
+</html>

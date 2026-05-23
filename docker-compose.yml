@@ -1,0 +1,14 @@
+services:
+  mgnt-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: secure-server-manager
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
