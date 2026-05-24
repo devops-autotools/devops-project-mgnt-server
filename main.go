@@ -20,6 +20,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/gorilla/websocket"
 	"time"
 )
 
@@ -76,8 +78,32 @@ type Server struct {
 	ExecutedCmds     []*ConsoleCommand `json:"-"`
 	// cmdNotify signals a waiting long-poll agent when a command is queued.
 	// Buffered(1): non-blocking send, agent always checks PendingCmds on wake.
-	cmdNotify        chan struct{}      `json:"-"`
+	cmdNotify            chan struct{} `json:"-"`
+	PendingShellSessions []string     `json:"-"` // session IDs waiting to be picked up by agent
 }
+
+// ShellSession tracks a live PTY bridge between browser WebSocket and agent WebSocket.
+type ShellSession struct {
+	ID         string
+	ServerID   string
+	browserWS  *websocket.Conn
+	agentWS    *websocket.Conn
+	agentReady chan struct{} // closed when agent connects
+	done       chan struct{} // closed when bridge ends
+	mu         sync.Mutex
+}
+
+var (
+	shellSessions   = map[string]*ShellSession{}
+	shellSessionsMu sync.RWMutex
+
+	wsUpgrader = websocket.Upgrader{
+		ReadBufferSize:  4096,
+		WriteBufferSize: 4096,
+		// Same-origin enforced by auth middleware; agent connections auth via token.
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+)
 
 // Struct for the JSON request sent by target agents
 type AgentReport struct {
@@ -140,7 +166,8 @@ func main() {
 	// --- Browser mux: SPA + API (HTTP, no TLS required for dashboard) ---
 	browserMux := http.NewServeMux()
 	browserMux.Handle("/", http.FileServer(http.Dir("./public")))
-	browserMux.HandleFunc("GET /agent/install/{token}", handleAgentInstallScript)
+	browserMux.HandleFunc("GET /agent/install/{token}", handleAgentInstallScriptGo)
+	browserMux.HandleFunc("GET /agent/install2/{token}", handleAgentInstallScriptGo)
 	browserMux.HandleFunc("POST /api/auth/login", handleLogin)
 	browserMux.HandleFunc("POST /api/auth/logout", handleLogout)
 	browserMux.HandleFunc("GET /api/auth/check", handleAuthCheck)
@@ -154,12 +181,16 @@ func main() {
 	browserMux.HandleFunc("POST /api/tags", authMiddleware(handleCreateTag))
 	browserMux.HandleFunc("DELETE /api/tags/{name}", authMiddleware(handleDeleteTag))
 	browserMux.HandleFunc("PUT /api/servers/{id}/tags", authMiddleware(handleSetServerTags))
+	// PTY shell sessions (WebSocket, authenticated via session cookie)
+	browserMux.HandleFunc("GET /api/servers/shell/{id}/ws/{session_id}", authMiddleware(handleShellBrowserWS))
 
 	// --- Agent mux: telemetry + long-poll (HTTPS only) ---
 	agentMux := http.NewServeMux()
 	agentMux.HandleFunc("POST /agent/report", handleAgentReport)
 	agentMux.HandleFunc("POST /agent/report/result", handleAgentCommandResult)
 	agentMux.HandleFunc("GET /agent/cmd/wait/{token}", handleAgentWaitCommand)
+	// PTY shell sessions (WebSocket, authenticated via agent token)
+	agentMux.HandleFunc("GET /agent/shell/{session_id}/ws", handleShellAgentWS)
 
 	go sessionCleanupLoop()
 
@@ -1186,6 +1217,77 @@ echo "========================================================="
 	_, _ = w.Write([]byte(scriptContent))
 }
 
+// handleAgentInstallScriptGo serves a modern install script that downloads the
+// compiled Go agent binary, writes config, and starts it as a daemon.
+// The binary is served as a static file from public/downloads/.
+func handleAgentInstallScriptGo(w http.ResponseWriter, r *http.Request) {
+	token := r.PathValue("token")
+
+	serverMutex.RLock()
+	var serverName string
+	for _, s := range servers {
+		if s.Token == token {
+			serverName = s.Name
+			break
+		}
+	}
+	serverMutex.RUnlock()
+
+	if serverName == "" {
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	baseURL := getBaseURL(r)
+	serverHost := getServerHost(r)
+
+	script := fmt.Sprintf(`#!/bin/bash
+# mgnt-server Go agent installer — %s
+set -e
+INSTALL_DIR="$HOME/.mgnt-agent"
+mkdir -p "$INSTALL_DIR"
+
+ARCH=$(uname -m)
+case $ARCH in
+  x86_64)  ARCH="amd64" ;;
+  aarch64) ARCH="arm64" ;;
+  *) echo "Unsupported arch: $ARCH"; exit 1 ;;
+esac
+
+# Download to a temp file first — avoids ETXTBSY if agent binary is currently running
+AGENT_TMP="$INSTALL_DIR/agent.new"
+echo "==> Downloading agent (linux/$ARCH)..."
+curl -fsSL "%s/downloads/agent-linux-$ARCH" -o "$AGENT_TMP"
+chmod +x "$AGENT_TMP"
+
+cat > "$INSTALL_DIR/ca.crt" << 'CACERT_EOF'
+%s
+CACERT_EOF
+
+cat > "$INSTALL_DIR/config.json" << 'CONFIG_EOF'
+{"server_host":"%s","server_tls_port":"%s","token":"%s"}
+CONFIG_EOF
+
+# Kill old agent before replacing the binary
+PID_FILE="$INSTALL_DIR/agent.pid"
+[ -f "$PID_FILE" ] && kill "$(cat "$PID_FILE")" 2>/dev/null || true
+sleep 0.5
+
+# Now safe to replace — old process has released the file
+mv "$AGENT_TMP" "$INSTALL_DIR/agent"
+
+LOG_FILE="$INSTALL_DIR/agent.log"
+nohup "$INSTALL_DIR/agent" > "$LOG_FILE" 2>&1 &
+echo $! > "$PID_FILE"
+
+echo "==> Agent started (PID $(cat "$PID_FILE")). Dashboard updates in seconds."
+`, serverName, baseURL, strings.TrimSpace(string(caCertPEM)),
+		serverHost, config.AgentTLSPort, token)
+
+	w.Header().Set("Content-Type", "text/x-shellscript")
+	_, _ = w.Write([]byte(script))
+}
+
 func handleQueueCommand(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	id := r.PathValue("id")
@@ -1299,8 +1401,23 @@ func handleAgentWaitCommand(w http.ResponseWriter, r *http.Request) {
 
 	deadline := time.After(25 * time.Second)
 
+	isV2 := r.URL.Query().Get("v") == "2"
+
 	for {
 		serverMutex.Lock()
+
+		// v2 agents (Go binary): deliver pending shell sessions first.
+		if isV2 && len(target.PendingShellSessions) > 0 {
+			sessionID := target.PendingShellSessions[0]
+			target.PendingShellSessions = target.PendingShellSessions[1:]
+			serverMutex.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"type":       "shell",
+				"session_id": sessionID,
+			})
+			return
+		}
+
 		if len(target.PendingCmds) > 0 {
 			cmd := target.PendingCmds[0]
 			target.PendingCmds = target.PendingCmds[1:]
@@ -1310,10 +1427,18 @@ func handleAgentWaitCommand(w http.ResponseWriter, r *http.Request) {
 				target.ExecutedCmds = target.ExecutedCmds[len(target.ExecutedCmds)-30:]
 			}
 			serverMutex.Unlock()
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"command":    cmd.Command,
-				"command_id": cmd.ID,
-			})
+			if isV2 {
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"type":       "exec",
+					"command":    cmd.Command,
+					"command_id": cmd.ID,
+				})
+			} else {
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"command":    cmd.Command,
+					"command_id": cmd.ID,
+				})
+			}
 			return
 		}
 		serverMutex.Unlock()
@@ -1321,7 +1446,7 @@ func handleAgentWaitCommand(w http.ResponseWriter, r *http.Request) {
 		// Wait for a new command signal, timeout, or client disconnect.
 		select {
 		case <-target.cmdNotify:
-			// Command was queued — loop back to dequeue it.
+			// Command or shell session queued — loop back to dequeue.
 		case <-deadline:
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -1479,4 +1604,173 @@ func handleAgentCommandResult(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, _ = w.Write([]byte(`{"status":"success"}`))
+}
+
+// --- PTY Shell Session handlers ---
+
+// handleShellBrowserWS upgrades the browser HTTP request to WebSocket, creates a
+// ShellSession, signals the agent (via cmdNotify), then bridges traffic once the
+// agent connects its own WebSocket.
+func handleShellBrowserWS(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	sessionID := r.PathValue("session_id")
+	if serverID == "" || sessionID == "" {
+		http.Error(w, `{"error":"missing id or session_id"}`, http.StatusBadRequest)
+		return
+	}
+
+	serverMutex.RLock()
+	srv, exists := servers[serverID]
+	serverMutex.RUnlock()
+	if !exists {
+		http.Error(w, `{"error":"server not found"}`, http.StatusNotFound)
+		return
+	}
+
+	conn, err := wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("shell browser ws upgrade: %v", err)
+		return
+	}
+
+	session := &ShellSession{
+		ID:         sessionID,
+		ServerID:   serverID,
+		browserWS:  conn,
+		agentReady: make(chan struct{}),
+		done:       make(chan struct{}),
+	}
+
+	shellSessionsMu.Lock()
+	shellSessions[sessionID] = session
+	shellSessionsMu.Unlock()
+
+	defer func() {
+		shellSessionsMu.Lock()
+		delete(shellSessions, sessionID)
+		shellSessionsMu.Unlock()
+
+		// Remove from server's pending list if agent never connected.
+		serverMutex.Lock()
+		if s, ok := servers[serverID]; ok {
+			for i, sid := range s.PendingShellSessions {
+				if sid == sessionID {
+					s.PendingShellSessions = append(s.PendingShellSessions[:i], s.PendingShellSessions[i+1:]...)
+					break
+				}
+			}
+		}
+		serverMutex.Unlock()
+
+		conn.Close()
+	}()
+
+	// Queue shell session request; wake the agent's long-poll.
+	serverMutex.Lock()
+	srv.PendingShellSessions = append(srv.PendingShellSessions, sessionID)
+	select {
+	case srv.cmdNotify <- struct{}{}:
+	default:
+	}
+	serverMutex.Unlock()
+
+	// Wait for agent to connect (30 s timeout).
+	select {
+	case <-session.agentReady:
+		bridgeShellSession(session)
+	case <-time.After(30 * time.Second):
+		_ = conn.WriteMessage(websocket.TextMessage,
+			[]byte(`{"type":"error","message":"Agent did not connect — is the Go agent installed?"}`))
+	}
+}
+
+// handleShellAgentWS is called by the Go agent when it opens its PTY WebSocket.
+// It authenticates via the agent token, locates the pending session, and signals
+// the browser handler that the bridge can start.
+func handleShellAgentWS(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("session_id")
+	token := r.URL.Query().Get("token")
+
+	serverMutex.RLock()
+	var found bool
+	for _, s := range servers {
+		if s.Token == token {
+			found = true
+			break
+		}
+	}
+	serverMutex.RUnlock()
+
+	if !found {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	shellSessionsMu.RLock()
+	session := shellSessions[sessionID]
+	shellSessionsMu.RUnlock()
+
+	if session == nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	conn, err := wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("shell agent ws upgrade: %v", err)
+		return
+	}
+
+	session.mu.Lock()
+	session.agentWS = conn
+	session.mu.Unlock()
+
+	close(session.agentReady) // unblock browser handler
+
+	// Hold alive until the bridge ends.
+	<-session.done
+	conn.Close()
+}
+
+// bridgeShellSession proxies frames bidirectionally between browser and agent WebSocket.
+func bridgeShellSession(session *ShellSession) {
+	defer close(session.done)
+
+	session.mu.Lock()
+	browser := session.browserWS
+	agent := session.agentWS
+	session.mu.Unlock()
+
+	_ = browser.WriteMessage(websocket.TextMessage, []byte(`{"type":"ready"}`))
+
+	var wg sync.WaitGroup
+
+	// agent → browser
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			mt, data, err := agent.ReadMessage()
+			if err != nil {
+				break
+			}
+			if err := browser.WriteMessage(mt, data); err != nil {
+				break
+			}
+		}
+		browser.Close()
+	}()
+
+	// browser → agent
+	for {
+		mt, data, err := browser.ReadMessage()
+		if err != nil {
+			break
+		}
+		if err := agent.WriteMessage(mt, data); err != nil {
+			break
+		}
+	}
+	agent.Close()
+	wg.Wait()
 }

@@ -208,8 +208,6 @@ function setupEventListeners() {
         fetchTelemetry();
     });
 
-    // Terminal keyboard handler
-    el.terminalInput.addEventListener('keydown', handleTerminalKeydown);
 }
 
 // Show custom toast notification
@@ -820,394 +818,201 @@ function waitForAgentConnection() {
     }, 1500);
 }
 
-// --- SECURE FLOATING WEB CONSOLE TERMINAL HANDLERS ---
+// =========================================================================
+// PTY SHELL WINDOWS — xterm.js + WebSocket multi-session
+// =========================================================================
+const shellSessions = new Map(); // sessionId → { term, ws, fitAddon, winEl, serverId, serverName, minimized, observer }
+let shellZIndex = 1000;
 
-// ============================================================
-// REAL TERMINAL: State
-// ============================================================
-const termState = {
-    history: [],
-    historyIdx: -1,
-    currentPrompt: '',
-    pendingEntries: new Map(),
-    printedCmdLines: new Set(),
-    processedCmds: new Set(),
-    eventSource: null,
-    tabMatches: [],
-    tabIdx: -1,
-    tabPrefix: '',
-};
-
-function buildPromptHTML(raw) {
-    // Parse "user@host:path$" or "user@host:path#" into coloured spans
-    const m = raw.match(/^([^@]*)(@)([^:]*)([:])(.+?)([#$])\s*$/);
-    if (m) {
-        return `<span class="prompt-user">${escHTML(m[1])}</span><span class="prompt-at">${m[2]}</span><span class="prompt-host">${escHTML(m[3])}</span><span class="prompt-colon">${m[4]}</span><span class="prompt-path">${escHTML(m[5])}</span><span class="prompt-dollar">${m[6]}</span>`;
-    }
-    return `<span class="prompt-dollar">${escHTML(raw)}</span>`;
+function genSessionId() {
+    const a = new Uint8Array(16);
+    crypto.getRandomValues(a);
+    return Array.from(a, b => b.toString(16).padStart(2, '0')).join('');
 }
 
-function setLivePrompt(raw) {
-    termState.currentPrompt = raw;
-    if (el.terminalPromptLabel) {
-        el.terminalPromptLabel.innerHTML = buildPromptHTML(raw);
-    }
-}
-
-function focusTerminalInput() {
-    if (el.terminalInput) el.terminalInput.focus();
-}
-window.focusTerminalInput = focusTerminalInput;
-
+// Called by Shell button in the Servers table
 window.openTerminalShell = function(serverId, serverName) {
-    state.activeTerminalServerId = serverId;
-
-    // Reset terminal state
-    termState.history = [];
-    termState.historyIdx = -1;
-    termState.pendingEntries.clear();
-    termState.printedCmdLines.clear();
-    termState.processedCmds.clear();
-
-    el.terminalModal.classList.remove('hidden');
-    el.terminalInput.value = '';
-
-    if (el.terminalTitleLabel) {
-        el.terminalTitleLabel.textContent = `bash — ${serverName}`;
-    }
-
-    // Set initial prompt to server name until first real prompt arrives
-    setLivePrompt(`user@${serverName}:~$`);
-
-    // Clear output area, keep welcome
-    const body = el.terminalOutputLogs;
-    body.innerHTML = `
-        <div class="terminal-welcome-line">Welcome to <span class="text-green">Secure Shell Gateway</span> — outbound polling, no inbound SSH required.</div>
-        <div class="terminal-welcome-line dim-text">Type any command and press <kbd>Enter</kbd>. Use <kbd>↑</kbd> <kbd>↓</kbd> for history. <kbd>Ctrl+L</kbd> to clear.</div>
-        <div class="terminal-spacer"></div>`;
-
-    startTerminalPolling(serverId);
-    setTimeout(() => el.terminalInput.focus(), 80);
+    openShell(serverId, serverName);
 };
 
-window.closeTerminalModal = function() {
-    el.terminalModal.classList.add('hidden');
-    stopTerminalPolling();
-    state.activeTerminalServerId = null;
+function openShell(serverId, serverName) {
+    const sessionId = genSessionId();
+
+    // Build floating window element
+    const win = document.createElement('div');
+    win.className = 'shell-window';
+    win.id = 'shell-win-' + sessionId;
+    win.style.zIndex = ++shellZIndex;
+    win.innerHTML = `
+        <div class="shell-titlebar" data-session="${sessionId}">
+            <div class="shell-title-info">
+                <i class="fa-solid fa-terminal"></i>
+                <span class="shell-title-name">${escHTML(serverName)}</span>
+                <span class="shell-status-badge shell-connecting">Connecting…</span>
+            </div>
+            <div class="shell-controls">
+                <button class="shell-ctrl-btn" onclick="minimizeShell('${sessionId}')" title="Minimize">−</button>
+                <button class="shell-ctrl-btn shell-close-btn" onclick="closeShell('${sessionId}')" title="Close">✕</button>
+            </div>
+        </div>
+        <div class="shell-body" id="shell-body-${sessionId}"></div>`;
+    document.getElementById('shell-windows').appendChild(win);
+
+    makeDraggable(win, win.querySelector('.shell-titlebar'));
+    win.addEventListener('mousedown', () => bringShellToFront(sessionId));
+    positionShellWindow(win);
+
+    // xterm.js Terminal instance
+    const term = new Terminal({
+        theme: {
+            background: '#0d1117', foreground: '#e6edf3',
+            cursor: '#58a6ff',     cursorAccent: '#0d1117',
+            selectionBackground: '#264f7855',
+            black: '#484f58',  brightBlack: '#6e7681',
+            red: '#ff7b72',    brightRed: '#ffa198',
+            green: '#3fb950',  brightGreen: '#56d364',
+            yellow: '#d29922', brightYellow: '#e3b341',
+            blue: '#58a6ff',   brightBlue: '#79c0ff',
+            magenta: '#bc8cff',brightMagenta: '#d2a8ff',
+            cyan: '#39c5cf',   brightCyan: '#56d4dd',
+            white: '#b1bac4',  brightWhite: '#f0f6fc',
+        },
+        fontFamily: '"Cascadia Code","Fira Code","JetBrains Mono","Consolas",monospace',
+        fontSize: 13,
+        lineHeight: 1.4,
+        cursorBlink: true,
+        scrollback: 5000,
+        allowTransparency: false,
+    });
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(document.getElementById('shell-body-' + sessionId));
+    fitAddon.fit();
+
+    // WebSocket to server bridge
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/api/servers/shell/${serverId}/ws/${sessionId}`);
+    ws.binaryType = 'arraybuffer';
+
+    const session = { term, ws, fitAddon, winEl: win, serverId, serverName, minimized: false, observer: null };
+    shellSessions.set(sessionId, session);
+
+    ws.onmessage = (ev) => {
+        if (typeof ev.data === 'string') {
+            try {
+                const msg = JSON.parse(ev.data);
+                if (msg.type === 'ready') {
+                    setShellStatus(sessionId, 'connected');
+                    term.focus();
+                } else if (msg.type === 'error') {
+                    setShellStatus(sessionId, 'error');
+                    term.write('\r\n\x1b[31m✖ ' + (msg.message || 'Connection error') + '\x1b[0m\r\n');
+                }
+            } catch (_) {}
+        } else {
+            term.write(new Uint8Array(ev.data));
+        }
+    };
+    ws.onclose = () => {
+        setShellStatus(sessionId, 'closed');
+        term.write('\r\n\x1b[33m[session closed]\x1b[0m\r\n');
+    };
+    ws.onerror = () => setShellStatus(sessionId, 'error');
+
+    // Keystrokes → PTY (binary UTF-8)
+    const enc = new TextEncoder();
+    term.onData(data => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(enc.encode(data).buffer);
+    });
+
+    // Resize → agent
+    term.onResize(({ rows, cols }) => {
+        if (ws.readyState === WebSocket.OPEN)
+            ws.send(JSON.stringify({ type: 'resize', rows, cols }));
+    });
+
+    // Refit when the window is resized
+    const obs = new ResizeObserver(() => { if (!session.minimized) fitAddon.fit(); });
+    obs.observe(document.getElementById('shell-body-' + sessionId));
+    session.observer = obs;
+}
+
+function setShellStatus(sessionId, status) {
+    const win = document.getElementById('shell-win-' + sessionId);
+    if (!win) return;
+    const badge = win.querySelector('.shell-status-badge');
+    if (!badge) return;
+    const map = { connecting: 'Connecting…', connected: 'Connected', closed: 'Closed', error: 'Error' };
+    badge.textContent = map[status] || status;
+    badge.className = 'shell-status-badge shell-' + status;
+}
+
+window.closeShell = function(sessionId) {
+    const s = shellSessions.get(sessionId);
+    if (!s) return;
+    s.ws.close();
+    s.observer?.disconnect();
+    document.getElementById('shell-win-' + sessionId)?.remove();
+    document.getElementById('taskbar-' + sessionId)?.remove();
+    shellSessions.delete(sessionId);
 };
 
-function startTerminalPolling(serverId) {
-    stopTerminalPolling();
+window.minimizeShell = function(sessionId) {
+    const s = shellSessions.get(sessionId);
+    if (!s) return;
+    s.minimized = true;
+    s.winEl.classList.add('shell-minimized');
+    if (!document.getElementById('taskbar-' + sessionId)) {
+        const item = document.createElement('div');
+        item.className = 'taskbar-item';
+        item.id = 'taskbar-' + sessionId;
+        item.innerHTML = `<i class="fa-solid fa-terminal"></i> <span>${escHTML(s.serverName)}</span>
+            <button class="taskbar-restore" onclick="restoreShell('${sessionId}')">▲</button>
+            <button class="taskbar-close" onclick="closeShell('${sessionId}')">✕</button>`;
+        document.getElementById('shell-taskbar').appendChild(item);
+    }
+};
 
-    const es = new EventSource(`/api/servers/terminal/stream/${serverId}`);
-    termState.eventSource = es;
+window.restoreShell = function(sessionId) {
+    const s = shellSessions.get(sessionId);
+    if (!s) return;
+    s.minimized = false;
+    s.winEl.classList.remove('shell-minimized');
+    bringShellToFront(sessionId);
+    document.getElementById('taskbar-' + sessionId)?.remove();
+    setTimeout(() => s.fitAddon.fit(), 50);
+};
 
-    es.addEventListener('connected', () => {
-        pollTerminalLogs(serverId);
+function bringShellToFront(sessionId) {
+    const win = document.getElementById('shell-win-' + sessionId);
+    if (win) win.style.zIndex = ++shellZIndex;
+}
+
+function positionShellWindow(win) {
+    const offset = (shellSessions.size % 8) * 28;
+    win.style.left = (80 + offset) + 'px';
+    win.style.top  = (60 + offset) + 'px';
+}
+
+function makeDraggable(el, handle) {
+    let ox, oy, sl, st;
+    handle.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.shell-ctrl-btn')) return;
+        ox = e.clientX; oy = e.clientY;
+        const r = el.getBoundingClientRect();
+        sl = r.left; st = r.top;
+        e.preventDefault();
+        const move = (ev) => {
+            el.style.left = (sl + ev.clientX - ox) + 'px';
+            el.style.top  = (st + ev.clientY - oy) + 'px';
+        };
+        const up = () => {
+            document.removeEventListener('mousemove', move);
+            document.removeEventListener('mouseup', up);
+        };
+        document.addEventListener('mousemove', move);
+        document.addEventListener('mouseup', up);
     });
-
-    es.addEventListener('cmd', (e) => {
-        try { renderTerminalCommandResult(JSON.parse(e.data)); } catch (_) {}
-    });
-}
-
-function stopTerminalPolling() {
-    if (termState.eventSource) {
-        termState.eventSource.close();
-        termState.eventSource = null;
-    }
-    if (state.terminalInterval) {
-        clearInterval(state.terminalInterval);
-        state.terminalInterval = null;
-    }
-}
-
-async function pollTerminalLogs(serverId) {
-    if (!state.authenticated || !state.activeTerminalServerId) return;
-    try {
-        const resp = await fetch(`/api/servers/terminal/${serverId}`);
-        if (!resp.ok) return;
-        const commands = await resp.json();
-        if (!Array.isArray(commands)) return;
-
-        let scrollNeeded = false;
-
-        commands.forEach(cmd => {
-            // 1. Print prompt + command line when first seen
-            if (!termState.printedCmdLines.has(cmd.id)) {
-                termState.printedCmdLines.add(cmd.id);
-
-                const promptRaw = cmd.prompt || termState.currentPrompt;
-                const entry = document.createElement('div');
-                entry.className = 'terminal-entry';
-                entry.id = `entry-${cmd.id}`;
-
-                const cmdLine = document.createElement('div');
-                cmdLine.className = 'terminal-cmd-line';
-                cmdLine.innerHTML = `<span class="terminal-prompt-text">${buildPromptHTML(promptRaw)}&nbsp;</span><span class="terminal-cmd-text">${escHTML(cmd.command)}</span>`;
-                entry.appendChild(cmdLine);
-
-                // Add pending spinner
-                const pending = document.createElement('div');
-                pending.className = 'terminal-pending';
-                pending.textContent = 'Executing...';
-                entry.appendChild(pending);
-                termState.pendingEntries.set(cmd.id, pending);
-
-                el.terminalOutputLogs.appendChild(entry);
-                scrollNeeded = true;
-            }
-
-            // 2. Replace pending spinner with output once done
-            if ((cmd.status === 'success' || cmd.status === 'error') && !termState.processedCmds.has(cmd.id)) {
-                termState.processedCmds.add(cmd.id);
-
-                const pending = termState.pendingEntries.get(cmd.id);
-                if (pending) {
-                    pending.remove();
-                    termState.pendingEntries.delete(cmd.id);
-                }
-
-                const entry = document.getElementById(`entry-${cmd.id}`);
-                if (entry && cmd.output && cmd.output.trim() !== '') {
-                    const out = document.createElement('div');
-                    out.className = cmd.status === 'error' ? 'terminal-stderr' : 'terminal-stdout';
-                    out.textContent = cmd.output;  // textContent = no HTML injection, preserves whitespace
-                    entry.appendChild(out);
-                } else if (entry && (!cmd.output || cmd.output.trim() === '')) {
-                    // No output — add nothing (clean like a real terminal)
-                }
-
-                // Update live prompt with result prompt
-                if (cmd.prompt) setLivePrompt(cmd.prompt);
-
-                scrollNeeded = true;
-            }
-        });
-
-        if (scrollNeeded) {
-            el.terminalOutputLogs.scrollTop = el.terminalOutputLogs.scrollHeight;
-        }
-    } catch (e) {
-        // Silent fail
-    }
-}
-
-function renderTerminalCommandResult(cmd) {
-    // Print command line if not pre-created (e.g., command from another session)
-    if (!termState.printedCmdLines.has(cmd.id)) {
-        termState.printedCmdLines.add(cmd.id);
-        const entry = document.createElement('div');
-        entry.className = 'terminal-entry';
-        entry.id = `entry-${cmd.id}`;
-        const cmdLine = document.createElement('div');
-        cmdLine.className = 'terminal-cmd-line';
-        cmdLine.innerHTML = `<span class="terminal-prompt-text">${buildPromptHTML(cmd.prompt || termState.currentPrompt)}&nbsp;</span><span class="terminal-cmd-text">${escHTML(cmd.command)}</span>`;
-        entry.appendChild(cmdLine);
-        const pending = document.createElement('div');
-        pending.className = 'terminal-pending';
-        pending.textContent = 'Executing...';
-        entry.appendChild(pending);
-        termState.pendingEntries.set(cmd.id, pending);
-        el.terminalOutputLogs.appendChild(entry);
-    }
-
-    if ((cmd.status === 'success' || cmd.status === 'error') && !termState.processedCmds.has(cmd.id)) {
-        termState.processedCmds.add(cmd.id);
-        const pending = termState.pendingEntries.get(cmd.id);
-        if (pending) { pending.remove(); termState.pendingEntries.delete(cmd.id); }
-        const entry = document.getElementById(`entry-${cmd.id}`);
-        if (entry && cmd.output && cmd.output.trim() !== '') {
-            const out = document.createElement('div');
-            out.className = cmd.status === 'error' ? 'terminal-stderr' : 'terminal-stdout';
-            out.textContent = cmd.output;
-            entry.appendChild(out);
-        }
-        if (cmd.prompt) setLivePrompt(cmd.prompt);
-        el.terminalOutputLogs.scrollTop = el.terminalOutputLogs.scrollHeight;
-    }
-}
-
-async function submitTerminalCommand(cmdText) {
-    if (!state.activeTerminalServerId || !cmdText) return;
-
-    if (cmdText === 'clear' || cmdText === 'reset') {
-        el.terminalOutputLogs.innerHTML = '<div class="terminal-spacer"></div>';
-        return;
-    }
-
-    termState.history.unshift(cmdText);
-    if (termState.history.length > 200) termState.history.pop();
-    termState.historyIdx = -1;
-
-    try {
-        const resp = await fetch(`/api/servers/execute/${state.activeTerminalServerId}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ command: cmdText })
-        });
-        if (!resp.ok) {
-            const data = await resp.json().catch(() => ({}));
-            appendSystemLine(`Error: ${data.error || 'Failed to send command.'}`, true);
-            return;
-        }
-        const data = await resp.json();
-        const cmdId = data.command_id;
-
-        // Pre-render command line immediately; SSE delivers the result
-        if (cmdId && !termState.printedCmdLines.has(cmdId)) {
-            termState.printedCmdLines.add(cmdId);
-            const entry = document.createElement('div');
-            entry.className = 'terminal-entry';
-            entry.id = `entry-${cmdId}`;
-            const cmdLine = document.createElement('div');
-            cmdLine.className = 'terminal-cmd-line';
-            cmdLine.innerHTML = `<span class="terminal-prompt-text">${buildPromptHTML(termState.currentPrompt)}&nbsp;</span><span class="terminal-cmd-text">${escHTML(cmdText)}</span>`;
-            entry.appendChild(cmdLine);
-            const pending = document.createElement('div');
-            pending.className = 'terminal-pending';
-            pending.textContent = 'Executing...';
-            entry.appendChild(pending);
-            termState.pendingEntries.set(cmdId, pending);
-            el.terminalOutputLogs.appendChild(entry);
-            el.terminalOutputLogs.scrollTop = el.terminalOutputLogs.scrollHeight;
-        }
-    } catch (err) {
-        appendSystemLine('Network error: could not reach backend.', true);
-    }
-}
-
-function handleTerminalKeydown(e) {
-    if (!el.terminalModal.classList.contains('hidden')) {
-        // Tab → autocomplete from history
-        if (e.key === 'Tab') {
-            e.preventDefault();
-            e.stopPropagation();
-            handleTabComplete();
-            return;
-        }
-
-        // Any other key (except Tab) → reset tab state and close suggestions
-        if (e.key !== 'Tab') {
-            if (termState.tabMatches.length > 0) {
-                termState.tabMatches = [];
-                termState.tabIdx = -1;
-                hideSuggestions();
-            }
-        }
-
-        // Enter → submit
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            const cmdText = el.terminalInput.value;
-            el.terminalInput.value = '';
-            hideSuggestions();
-            if (cmdText.trim()) submitTerminalCommand(cmdText.trim());
-            termState.historyIdx = -1;
-        }
-        // Arrow Up → history previous
-        else if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            if (termState.history.length === 0) return;
-            termState.historyIdx = Math.min(termState.historyIdx + 1, termState.history.length - 1);
-            el.terminalInput.value = termState.history[termState.historyIdx];
-            setTimeout(() => { el.terminalInput.selectionStart = el.terminalInput.selectionEnd = el.terminalInput.value.length; }, 0);
-        }
-        // Arrow Down → history next
-        else if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            if (termState.historyIdx <= 0) {
-                termState.historyIdx = -1;
-                el.terminalInput.value = '';
-            } else {
-                termState.historyIdx--;
-                el.terminalInput.value = termState.history[termState.historyIdx];
-            }
-        }
-        // Escape → close suggestions
-        else if (e.key === 'Escape') {
-            hideSuggestions();
-            termState.tabMatches = [];
-            termState.tabIdx = -1;
-        }
-        // Ctrl+L → clear screen
-        else if (e.ctrlKey && e.key === 'l') {
-            e.preventDefault();
-            el.terminalOutputLogs.innerHTML = '<div class="terminal-spacer"></div>';
-        }
-        // Ctrl+C → cancel input
-        else if (e.ctrlKey && e.key === 'c') {
-            e.preventDefault();
-            const cancelled = el.terminalInput.value;
-            el.terminalInput.value = '';
-            termState.historyIdx = -1;
-            hideSuggestions();
-            const line = document.createElement('div');
-            line.className = 'terminal-cmd-line';
-            line.innerHTML = `<span class="terminal-prompt-text">${buildPromptHTML(termState.currentPrompt)}&nbsp;</span><span class="terminal-cmd-text">${escHTML(cancelled)}^C</span>`;
-            el.terminalOutputLogs.appendChild(line);
-            el.terminalOutputLogs.scrollTop = el.terminalOutputLogs.scrollHeight;
-        }
-    }
-}
-
-function handleTabComplete() {
-    const input = el.terminalInput.value;
-
-    // First Tab press on a new prefix — build match list
-    if (termState.tabMatches.length === 0 || termState.tabPrefix !== input) {
-        termState.tabPrefix = input;
-        // Deduplicate history, keep order
-        const seen = new Set();
-        const candidates = termState.history.filter(cmd => {
-            if (cmd.startsWith(input) && cmd !== input && !seen.has(cmd)) {
-                seen.add(cmd);
-                return true;
-            }
-            return false;
-        });
-        if (candidates.length === 0) return;
-        termState.tabMatches = candidates;
-        termState.tabIdx = 0;
-    } else {
-        // Subsequent Tab presses → cycle forward
-        termState.tabIdx = (termState.tabIdx + 1) % termState.tabMatches.length;
-    }
-
-    el.terminalInput.value = termState.tabMatches[termState.tabIdx];
-    showSuggestions(termState.tabMatches, termState.tabIdx);
-}
-
-function showSuggestions(matches, activeIdx) {
-    el.terminalSuggestions.innerHTML = matches.map((m, i) =>
-        `<div class="term-suggestion-item ${i === activeIdx ? 'active' : ''}" data-cmd="${escHTML(m)}">${escHTML(m)}</div>`
-    ).join('');
-    el.terminalSuggestions.classList.remove('hidden');
-}
-
-function hideSuggestions() {
-    el.terminalSuggestions.classList.add('hidden');
-    el.terminalSuggestions.innerHTML = '';
-}
-
-// Click on suggestion to apply it
-document.addEventListener('click', (e) => {
-    const item = e.target.closest('.term-suggestion-item');
-    if (item) {
-        el.terminalInput.value = item.dataset.cmd;
-        hideSuggestions();
-        termState.tabMatches = [];
-        termState.tabIdx = -1;
-        el.terminalInput.focus();
-    }
-});
-
-function appendSystemLine(msg, isError = false) {
-    const el2 = document.createElement('div');
-    el2.className = isError ? 'terminal-stderr' : 'terminal-system-line';
-    el2.textContent = msg;
-    el.terminalOutputLogs.appendChild(el2);
-    el.terminalOutputLogs.scrollTop = el.terminalOutputLogs.scrollHeight;
 }
 
 // =========================================================================
