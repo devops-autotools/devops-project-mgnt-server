@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -39,6 +40,20 @@ type ConsoleCommand struct {
 type Tag struct {
 	Name  string `json:"name"`
 	Color string `json:"color"`
+}
+
+// ContainerInfo holds one container's metadata from Docker or Kubernetes.
+type ContainerInfo struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Image     string   `json:"image"`
+	Status    string   `json:"status"`
+	Runtime   string   `json:"runtime"`
+	Namespace string   `json:"namespace,omitempty"`
+	CPU       float64  `json:"cpu"`
+	RAM       int64    `json:"ram"`
+	Ports     []string `json:"ports"`
+	Uptime    string   `json:"uptime"`
 }
 
 // Struct representing application config
@@ -78,19 +93,22 @@ type Server struct {
 	ExecutedCmds     []*ConsoleCommand `json:"-"`
 	// cmdNotify signals a waiting long-poll agent when a command is queued.
 	// Buffered(1): non-blocking send, agent always checks PendingCmds on wake.
-	cmdNotify            chan struct{} `json:"-"`
-	PendingShellSessions []string     `json:"-"` // session IDs waiting to be picked up by agent
+	cmdNotify            chan struct{}    `json:"-"`
+	PendingShellSessions []string        `json:"-"` // session IDs waiting to be picked up by agent
+	Containers           []ContainerInfo `json:"-"` // live data from agent telemetry, not persisted
 }
 
 // ShellSession tracks a live PTY bridge between browser WebSocket and agent WebSocket.
 type ShellSession struct {
-	ID         string
-	ServerID   string
-	browserWS  *websocket.Conn
-	agentWS    *websocket.Conn
-	agentReady chan struct{} // closed when agent connects
-	done       chan struct{} // closed when bridge ends
-	mu         sync.Mutex
+	ID          string
+	ServerID    string
+	ContainerID string
+	ShellMode   string
+	browserWS   *websocket.Conn
+	agentWS     *websocket.Conn
+	agentReady  chan struct{} // closed when agent connects
+	done        chan struct{} // closed when bridge ends
+	mu          sync.Mutex
 }
 
 var (
@@ -107,22 +125,23 @@ var (
 
 // Struct for the JSON request sent by target agents
 type AgentReport struct {
-	Token     string  `json:"token"`
-	Hostname  string  `json:"hostname"`
-	IP        string  `json:"ip"`
-	OS        string  `json:"os"`
-	CPUModel  string  `json:"cpu_model"`
-	CPUCores  int     `json:"cpu_cores"`
-	CPUUsage  float64 `json:"cpu_usage"`
-	RAMTotal  float64 `json:"ram_total"`
-	RAMUsed   float64 `json:"ram_used"`
-	RAMFree   float64 `json:"ram_free"`
-	RAMUsage  float64 `json:"ram_usage"`
-	DiskTotal float64 `json:"disk_total"`
-	DiskUsed  float64 `json:"disk_used"`
-	DiskFree  float64 `json:"disk_free"`
-	DiskUsage float64 `json:"disk_usage"`
-	Uptime    string  `json:"uptime"`
+	Token      string          `json:"token"`
+	Hostname   string          `json:"hostname"`
+	IP         string          `json:"ip"`
+	OS         string          `json:"os"`
+	CPUModel   string          `json:"cpu_model"`
+	CPUCores   int             `json:"cpu_cores"`
+	CPUUsage   float64         `json:"cpu_usage"`
+	RAMTotal   float64         `json:"ram_total"`
+	RAMUsed    float64         `json:"ram_used"`
+	RAMFree    float64         `json:"ram_free"`
+	RAMUsage   float64         `json:"ram_usage"`
+	DiskTotal  float64         `json:"disk_total"`
+	DiskUsed   float64         `json:"disk_used"`
+	DiskFree   float64         `json:"disk_free"`
+	DiskUsage  float64         `json:"disk_usage"`
+	Uptime     string          `json:"uptime"`
+	Containers []ContainerInfo `json:"containers,omitempty"`
 }
 
 // Global Variables
@@ -183,6 +202,9 @@ func main() {
 	browserMux.HandleFunc("PUT /api/servers/{id}/tags", authMiddleware(handleSetServerTags))
 	// PTY shell sessions (WebSocket, authenticated via session cookie)
 	browserMux.HandleFunc("GET /api/servers/shell/{id}/ws/{session_id}", authMiddleware(handleShellBrowserWS))
+	// Container endpoints
+	browserMux.HandleFunc("GET /api/containers", authMiddleware(handleGetContainers))
+	browserMux.HandleFunc("POST /api/servers/{id}/containers/{cid}/action", authMiddleware(handleContainerAction))
 
 	// --- Agent mux: telemetry + long-poll (HTTPS only) ---
 	agentMux := http.NewServeMux()
@@ -909,6 +931,9 @@ func handleAgentReport(w http.ResponseWriter, r *http.Request) {
 	targetServer.Uptime = report.Uptime
 	targetServer.LastReport = time.Now()
 	targetServer.Connected = true
+	if report.Containers != nil {
+		targetServer.Containers = report.Containers
+	}
 
 	// Save to JSON
 	saveServersNoLock()
@@ -1411,10 +1436,20 @@ func handleAgentWaitCommand(w http.ResponseWriter, r *http.Request) {
 			sessionID := target.PendingShellSessions[0]
 			target.PendingShellSessions = target.PendingShellSessions[1:]
 			serverMutex.Unlock()
-			_ = json.NewEncoder(w).Encode(map[string]string{
+
+			shellSessionsMu.RLock()
+			sess := shellSessions[sessionID]
+			shellSessionsMu.RUnlock()
+
+			resp := map[string]string{
 				"type":       "shell",
 				"session_id": sessionID,
-			})
+			}
+			if sess != nil && sess.ContainerID != "" {
+				resp["container_id"] = sess.ContainerID
+				resp["shell_mode"] = sess.ShellMode
+			}
+			_ = json.NewEncoder(w).Encode(resp)
 			return
 		}
 
@@ -1634,11 +1669,13 @@ func handleShellBrowserWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	session := &ShellSession{
-		ID:         sessionID,
-		ServerID:   serverID,
-		browserWS:  conn,
-		agentReady: make(chan struct{}),
-		done:       make(chan struct{}),
+		ID:          sessionID,
+		ServerID:    serverID,
+		ContainerID: r.URL.Query().Get("container"),
+		ShellMode:   r.URL.Query().Get("mode"),
+		browserWS:   conn,
+		agentReady:  make(chan struct{}),
+		done:        make(chan struct{}),
 	}
 
 	shellSessionsMu.Lock()
@@ -1773,4 +1810,87 @@ func bridgeShellSession(session *ShellSession) {
 	}
 	agent.Close()
 	wg.Wait()
+}
+
+// handleGetContainers returns all containers across all servers, each tagged with
+// the server ID and name for client-side filtering.
+func handleGetContainers(w http.ResponseWriter, r *http.Request) {
+	type containerRow struct {
+		ContainerInfo
+		ServerID   string `json:"server_id"`
+		ServerName string `json:"server_name"`
+	}
+
+	serverMutex.RLock()
+	var rows []containerRow
+	for _, srv := range servers {
+		for _, c := range srv.Containers {
+			rows = append(rows, containerRow{
+				ContainerInfo: c,
+				ServerID:      srv.ID,
+				ServerName:    srv.Name,
+			})
+		}
+	}
+	serverMutex.RUnlock()
+
+	if rows == nil {
+		rows = []containerRow{}
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if a.ServerName != b.ServerName {
+			return a.ServerName < b.ServerName
+		}
+		if a.Runtime != b.Runtime {
+			return a.Runtime < b.Runtime
+		}
+		return a.Name < b.Name
+	})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(rows)
+}
+
+// handleContainerAction queues a docker start/stop/restart command via the existing
+// exec mechanism. The result is visible in the server's terminal log.
+func handleContainerAction(w http.ResponseWriter, r *http.Request) {
+	serverID := r.PathValue("id")
+	containerID := r.PathValue("cid")
+
+	var req struct {
+		Action string `json:"action"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+		return
+	}
+	switch req.Action {
+	case "start", "stop", "restart":
+	default:
+		http.Error(w, `{"error":"action must be start, stop, or restart"}`, http.StatusBadRequest)
+		return
+	}
+
+	serverMutex.Lock()
+	srv, ok := servers[serverID]
+	if !ok {
+		serverMutex.Unlock()
+		http.Error(w, `{"error":"server not found"}`, http.StatusNotFound)
+		return
+	}
+	cmd := &ConsoleCommand{
+		ID:        generateUUID(),
+		Command:   fmt.Sprintf("docker %s %s", req.Action, containerID),
+		Status:    "pending",
+		CreatedAt: time.Now(),
+	}
+	srv.PendingCmds = append(srv.PendingCmds, cmd)
+	select {
+	case srv.cmdNotify <- struct{}{}:
+	default:
+	}
+	serverMutex.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "queued", "command_id": cmd.ID})
 }

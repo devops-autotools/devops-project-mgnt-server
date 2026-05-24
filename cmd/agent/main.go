@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,30 +48,47 @@ type AgentConfig struct {
 
 // cmdResponse is the JSON body returned by the server's command poll endpoint.
 type cmdResponse struct {
-	Type      string `json:"type"`       // "exec" | "shell"
-	Command   string `json:"command"`    // exec only
-	CommandID string `json:"command_id"` // exec only
-	SessionID string `json:"session_id"` // shell only
+	Type        string `json:"type"`                   // "exec" | "shell"
+	Command     string `json:"command"`                // exec only
+	CommandID   string `json:"command_id"`             // exec only
+	SessionID   string `json:"session_id"`             // shell only
+	ContainerID string `json:"container_id,omitempty"` // shell only — docker exec target
+	ShellMode   string `json:"shell_mode,omitempty"`   // "exec" | "logs"
 }
 
 // telemetryPayload mirrors AgentReport on the server.
 type telemetryPayload struct {
-	Token     string  `json:"token"`
-	Hostname  string  `json:"hostname"`
-	IP        string  `json:"ip"`
-	OS        string  `json:"os"`
-	CPUModel  string  `json:"cpu_model"`
-	CPUCores  int     `json:"cpu_cores"`
-	CPUUsage  float64 `json:"cpu_usage"`
-	RAMTotal  float64 `json:"ram_total"`
-	RAMUsed   float64 `json:"ram_used"`
-	RAMFree   float64 `json:"ram_free"`
-	RAMUsage  float64 `json:"ram_usage"`
-	DiskTotal float64 `json:"disk_total"`
-	DiskUsed  float64 `json:"disk_used"`
-	DiskFree  float64 `json:"disk_free"`
-	DiskUsage float64 `json:"disk_usage"`
-	Uptime    string  `json:"uptime"`
+	Token      string          `json:"token"`
+	Hostname   string          `json:"hostname"`
+	IP         string          `json:"ip"`
+	OS         string          `json:"os"`
+	CPUModel   string          `json:"cpu_model"`
+	CPUCores   int             `json:"cpu_cores"`
+	CPUUsage   float64         `json:"cpu_usage"`
+	RAMTotal   float64         `json:"ram_total"`
+	RAMUsed    float64         `json:"ram_used"`
+	RAMFree    float64         `json:"ram_free"`
+	RAMUsage   float64         `json:"ram_usage"`
+	DiskTotal  float64         `json:"disk_total"`
+	DiskUsed   float64         `json:"disk_used"`
+	DiskFree   float64         `json:"disk_free"`
+	DiskUsage  float64         `json:"disk_usage"`
+	Uptime     string          `json:"uptime"`
+	Containers []ContainerInfo `json:"containers,omitempty"`
+}
+
+// ContainerInfo holds container metadata reported per telemetry cycle.
+type ContainerInfo struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Image     string   `json:"image"`
+	Status    string   `json:"status"`
+	Runtime   string   `json:"runtime"`
+	Namespace string   `json:"namespace,omitempty"`
+	CPU       float64  `json:"cpu"`
+	RAM       int64    `json:"ram"`
+	Ports     []string `json:"ports"`
+	Uptime    string   `json:"uptime"`
 }
 
 var (
@@ -79,12 +97,38 @@ var (
 	httpClient *http.Client
 	wsDialer   *websocket.Dialer
 	latestCPU  atomic.Value // float64 — updated every second by cpuSampler
+	pidLockFd  *os.File     // held open to keep flock alive for the process lifetime
 )
+
+// dockerHTTP communicates with the Docker daemon via its Unix socket.
+var dockerHTTP = &http.Client{
+	Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return net.Dial("unix", "/var/run/docker.sock")
+		},
+	},
+	Timeout: 5 * time.Second,
+}
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	home, _ := os.UserHomeDir()
+
+	// Prevent multiple agent instances via exclusive flock on the PID file.
+	// The lock is held for the lifetime of the process (fd never closed).
+	pidPath := filepath.Join(home, ".mgnt-agent", "agent.pid")
+	var pidErr error
+	pidLockFd, pidErr = os.OpenFile(pidPath, os.O_WRONLY|os.O_CREATE, 0644)
+	if pidErr != nil {
+		log.Fatalf("cannot open pid file %s: %v", pidPath, pidErr)
+	}
+	if err := syscall.Flock(int(pidLockFd.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		log.Fatalf("another agent instance is already running — exiting")
+	}
+	pidLockFd.Truncate(0)
+	pidLockFd.WriteString(fmt.Sprintf("%d\n", os.Getpid()))
+
 	cfgPath := filepath.Join(home, ".mgnt-agent", "config.json")
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -321,6 +365,263 @@ func localIP() string {
 	return conn.LocalAddr().(*net.UDPAddr).IP.String()
 }
 
+// --- Container collection ---
+
+type dockerListItem struct {
+	ID      string   `json:"Id"`
+	Names   []string `json:"Names"`
+	Image   string   `json:"Image"`
+	State   string   `json:"State"`
+	Created int64    `json:"Created"`
+	Ports   []struct {
+		PrivatePort int    `json:"PrivatePort"`
+		PublicPort  int    `json:"PublicPort"`
+		Type        string `json:"Type"`
+	} `json:"Ports"`
+}
+
+type dockerStatsResult struct {
+	CPUStats struct {
+		CPUUsage       struct{ TotalUsage uint64 `json:"total_usage"` } `json:"cpu_usage"`
+		SystemCPUUsage uint64                                           `json:"system_cpu_usage"`
+		OnlineCPUs     int                                              `json:"online_cpus"`
+	} `json:"cpu_stats"`
+	PreCPUStats struct {
+		CPUUsage       struct{ TotalUsage uint64 `json:"total_usage"` } `json:"cpu_usage"`
+		SystemCPUUsage uint64                                           `json:"system_cpu_usage"`
+	} `json:"precpu_stats"`
+	MemoryStats struct {
+		Usage uint64 `json:"usage"`
+	} `json:"memory_stats"`
+}
+
+func dockerGET(path string, out interface{}) error {
+	resp, err := dockerHTTP.Get("http://localhost" + path)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func containerAge(unixSec int64) string {
+	d := time.Since(time.Unix(unixSec, 0))
+	days := int(d.Hours()) / 24
+	hrs := int(d.Hours()) % 24
+	mins := int(d.Minutes()) % 60
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh", days, hrs)
+	}
+	if hrs > 0 {
+		return fmt.Sprintf("%dh %dm", hrs, mins)
+	}
+	return fmt.Sprintf("%dm", mins)
+}
+
+func collectDockerContainers() []ContainerInfo {
+	var list []dockerListItem
+	if err := dockerGET("/containers/json?all=1", &list); err != nil {
+		return nil
+	}
+	results := make([]ContainerInfo, len(list))
+	var wg sync.WaitGroup
+	for i, item := range list {
+		wg.Add(1)
+		go func(idx int, c dockerListItem) {
+			defer wg.Done()
+			name := c.ID
+			if len(name) > 12 {
+				name = name[:12]
+			}
+			if len(c.Names) > 0 {
+				name = strings.TrimPrefix(c.Names[0], "/")
+			}
+			seen := map[string]bool{}
+			var ports []string
+			for _, p := range c.Ports {
+				var s string
+				if p.PublicPort > 0 {
+					s = fmt.Sprintf("%d:%d", p.PublicPort, p.PrivatePort)
+				} else {
+					s = fmt.Sprintf("%d", p.PrivatePort)
+				}
+				if !seen[s] {
+					ports = append(ports, s)
+					seen[s] = true
+				}
+			}
+			var cpuPct float64
+			var ramBytes int64
+			if c.State == "running" {
+				var st dockerStatsResult
+				if err := dockerGET("/containers/"+c.ID+"/stats?stream=false", &st); err == nil {
+					cpuDelta := float64(st.CPUStats.CPUUsage.TotalUsage - st.PreCPUStats.CPUUsage.TotalUsage)
+					sysDelta := float64(st.CPUStats.SystemCPUUsage - st.PreCPUStats.SystemCPUUsage)
+					cpus := st.CPUStats.OnlineCPUs
+					if cpus == 0 {
+						cpus = 1
+					}
+					if sysDelta > 0 {
+						cpuPct = (cpuDelta / sysDelta) * float64(cpus) * 100
+					}
+					ramBytes = int64(st.MemoryStats.Usage)
+				}
+			}
+			id := c.ID
+			if len(id) > 12 {
+				id = id[:12]
+			}
+			results[idx] = ContainerInfo{
+				ID:      id,
+				Name:    name,
+				Image:   c.Image,
+				Status:  strings.ToLower(c.State),
+				Runtime: "docker",
+				CPU:     cpuPct,
+				RAM:     ramBytes,
+				Ports:   ports,
+				Uptime:  containerAge(c.Created),
+			}
+		}(i, item)
+	}
+	wg.Wait()
+	return results
+}
+
+// collectK8sStats runs kubectl top pods -A and returns a map of
+// "namespace/podname" → [cpuMillicores, ramBytes].
+func collectK8sStats() map[string][2]int64 {
+	out, err := exec.Command("kubectl", "top", "pods", "-A", "--no-headers").Output()
+	if err != nil {
+		return nil
+	}
+	stats := map[string][2]int64{}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 {
+			continue
+		}
+		ns, pod, cpuStr, memStr := f[0], f[1], f[2], f[3]
+
+		var cpuMilli int64
+		if strings.HasSuffix(cpuStr, "m") {
+			v, _ := strconv.ParseInt(strings.TrimSuffix(cpuStr, "m"), 10, 64)
+			cpuMilli = v
+		} else {
+			v, _ := strconv.ParseInt(cpuStr, 10, 64)
+			cpuMilli = v * 1000
+		}
+
+		var memBytes int64
+		switch {
+		case strings.HasSuffix(memStr, "Gi"):
+			v, _ := strconv.ParseFloat(strings.TrimSuffix(memStr, "Gi"), 64)
+			memBytes = int64(v * 1024 * 1024 * 1024)
+		case strings.HasSuffix(memStr, "Mi"):
+			v, _ := strconv.ParseInt(strings.TrimSuffix(memStr, "Mi"), 10, 64)
+			memBytes = v * 1024 * 1024
+		case strings.HasSuffix(memStr, "Ki"):
+			v, _ := strconv.ParseInt(strings.TrimSuffix(memStr, "Ki"), 10, 64)
+			memBytes = v * 1024
+		}
+		stats[ns+"/"+pod] = [2]int64{cpuMilli, memBytes}
+	}
+	return stats
+}
+
+func collectK8sContainers() []ContainerInfo {
+	out, err := exec.Command("kubectl", "get", "pods", "-A", "-o", "json").Output()
+	if err != nil {
+		return nil
+	}
+	var pl struct {
+		Items []struct {
+			Metadata struct {
+				Name      string `json:"name"`
+				Namespace string `json:"namespace"`
+			} `json:"metadata"`
+			Status struct {
+				Phase     string `json:"phase"`
+				StartTime string `json:"startTime"`
+			} `json:"status"`
+			Spec struct {
+				Containers []struct {
+					Name  string `json:"name"`
+					Image string `json:"image"`
+					Ports []struct {
+						ContainerPort int    `json:"containerPort"`
+						Protocol      string `json:"protocol"`
+					} `json:"ports"`
+				} `json:"containers"`
+			} `json:"spec"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &pl); err != nil {
+		return nil
+	}
+
+	stats := collectK8sStats() // may be nil if metrics-server not installed
+
+	var results []ContainerInfo
+	for _, pod := range pl.Items {
+		phase := strings.ToLower(pod.Status.Phase)
+		if phase == "succeeded" || phase == "failed" {
+			phase = "exited"
+		}
+		var uptime string
+		if pod.Status.StartTime != "" {
+			if t, err := time.Parse(time.RFC3339, pod.Status.StartTime); err == nil {
+				uptime = containerAge(t.Unix())
+			}
+		}
+
+		// Per-pod CPU/RAM from kubectl top (shared by all containers in the pod)
+		var podCPU float64
+		var podRAM int64
+		if stats != nil {
+			if s, ok := stats[pod.Metadata.Namespace+"/"+pod.Metadata.Name]; ok {
+				podCPU = float64(s[0]) / 10 // millicores → % of 1 core
+				podRAM = s[1]
+			}
+		}
+
+		for _, spec := range pod.Spec.Containers {
+			var ports []string
+			for _, p := range spec.Ports {
+				proto := strings.ToLower(p.Protocol)
+				if proto == "" {
+					proto = "tcp"
+				}
+				ports = append(ports, fmt.Sprintf("%d/%s", p.ContainerPort, proto))
+			}
+			// ID encodes exec target: namespace/podname/containername
+			cid := pod.Metadata.Namespace + "/" + pod.Metadata.Name + "/" + spec.Name
+			results = append(results, ContainerInfo{
+				ID:        cid,
+				Name:      spec.Name,
+				Image:     spec.Image,
+				Status:    phase,
+				Runtime:   "k8s",
+				Namespace: pod.Metadata.Namespace,
+				CPU:       podCPU,
+				RAM:       podRAM,
+				Ports:     ports,
+				Uptime:    uptime,
+			})
+		}
+	}
+	return results
+}
+
+func collectContainers() []ContainerInfo {
+	docker := collectDockerContainers()
+	k8s := collectK8sContainers()
+	if len(docker) == 0 && len(k8s) == 0 {
+		return nil
+	}
+	return append(docker, k8s...)
+}
+
 // --- Telemetry ---
 
 func postTelemetry() {
@@ -330,22 +631,23 @@ func postTelemetry() {
 	hostname, _ := os.Hostname()
 
 	p := telemetryPayload{
-		Token:     cfg.Token,
-		Hostname:  hostname,
-		IP:        localIP(),
-		OS:        readOSName(),
-		CPUModel:  readCPUModel(),
-		CPUCores:  readCPUCores(),
-		CPUUsage:  cpu,
-		RAMTotal:  ramTotal,
-		RAMUsed:   ramUsed,
-		RAMFree:   ramFree,
-		RAMUsage:  ramUsage,
-		DiskTotal: diskTotal,
-		DiskUsed:  diskUsed,
-		DiskFree:  diskFree,
-		DiskUsage: diskUsage,
-		Uptime:    readUptime(),
+		Token:      cfg.Token,
+		Hostname:   hostname,
+		IP:         localIP(),
+		OS:         readOSName(),
+		CPUModel:   readCPUModel(),
+		CPUCores:   readCPUCores(),
+		CPUUsage:   cpu,
+		RAMTotal:   ramTotal,
+		RAMUsed:    ramUsed,
+		RAMFree:    ramFree,
+		RAMUsage:   ramUsage,
+		DiskTotal:  diskTotal,
+		DiskUsed:   diskUsed,
+		DiskFree:   diskFree,
+		DiskUsage:  diskUsage,
+		Uptime:     readUptime(),
+		Containers: collectContainers(),
 	}
 	body, _ := json.Marshal(p)
 	resp, err := httpClient.Post(agentURL+"/agent/report", "application/json", bytes.NewReader(body))
@@ -389,7 +691,7 @@ func commandLoop() {
 		switch cmd.Type {
 		case "shell":
 			if cmd.SessionID != "" {
-				go handleShellSession(cmd.SessionID)
+				go handleShellSession(cmd.SessionID, cmd.ContainerID, cmd.ShellMode)
 			}
 		case "exec":
 			if cmd.Command != "" && cmd.CommandID != "" {
@@ -527,7 +829,7 @@ func resizePTY(master *os.File, rows, cols uint16) {
 
 // --- PTY shell session ---
 
-func handleShellSession(sessionID string) {
+func handleShellSession(sessionID, containerID, shellMode string) {
 	wsURL := fmt.Sprintf("wss://mgnt-server.local:%s/agent/shell/%s/ws?token=%s",
 		cfg.ServerTLSPort, sessionID, cfg.Token)
 
@@ -556,25 +858,56 @@ func handleShellSession(sessionID string) {
 		return
 	}
 
-	bash := exec.Command("bash", "-i")
-	bash.Env = append(os.Environ(), "TERM=xterm-256color")
-	bash.Stdin, bash.Stdout, bash.Stderr = slave, slave, slave
-	bash.SysProcAttr = &syscall.SysProcAttr{
-		Setsid:  true,
-		Setctty: true,
-		Ctty:    0, // fd 0 in child (stdin = slave PTY)
+	// Build the command based on whether this is a container session.
+	// K8s containers encode the target as "namespace/podname/containername".
+	// Docker containers use a plain short container ID (no slashes).
+	var shellCmd *exec.Cmd
+	var needsCtty bool
+	switch {
+	case containerID != "" && strings.Count(containerID, "/") == 2:
+		// K8s: namespace/podname/containername
+		parts := strings.SplitN(containerID, "/", 3)
+		ns, pod, ctr := parts[0], parts[1], parts[2]
+		if shellMode == "logs" {
+			shellCmd = exec.Command("kubectl", "logs", "-f", "--tail=200", "-n", ns, pod, "-c", ctr)
+			needsCtty = false
+		} else {
+			shellCmd = exec.Command("kubectl", "exec", "-it", pod, "-n", ns, "-c", ctr, "--", "sh")
+			needsCtty = true
+		}
+	case containerID != "" && shellMode == "logs":
+		shellCmd = exec.Command("docker", "logs", "-f", "--tail=200", containerID)
+		needsCtty = false
+	case containerID != "":
+		shellCmd = exec.Command("docker", "exec", "-it", containerID, "sh")
+		needsCtty = true
+	default:
+		shellCmd = exec.Command("bash", "-i")
+		needsCtty = true
+	}
+	shellCmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	shellCmd.Stdin, shellCmd.Stdout, shellCmd.Stderr = slave, slave, slave
+	if needsCtty {
+		shellCmd.SysProcAttr = &syscall.SysProcAttr{
+			Setsid:  true,
+			Setctty: true,
+			Ctty:    0,
+		}
+	} else {
+		shellCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	}
 
+	bash := shellCmd
 	if err := bash.Start(); err != nil {
-		log.Printf("bash.Start failed: %v (slave=%s fd=%d)", err, slaveName, slave.Fd())
+		log.Printf("shell.Start failed: %v (slave=%s)", err, slaveName)
 		slave.Close()
 		master.Close()
-		msg := fmt.Sprintf(`{"type":"error","message":"Cannot start bash: %s"}`, err.Error())
+		msg := fmt.Sprintf(`{"type":"error","message":"Cannot start shell: %s"}`, err.Error())
 		conn.WriteMessage(websocket.TextMessage, []byte(msg))
 		conn.Close()
 		return
 	}
-	slave.Close() // parent closes slave; bash holds it
+	slave.Close() // parent closes slave; child holds it
 
 	var wsMu sync.Mutex
 	wsSend := func(mt int, data []byte) {

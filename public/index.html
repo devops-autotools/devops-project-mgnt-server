@@ -11,7 +11,7 @@
     <!-- FontAwesome for Premium Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Stylesheet -->
-    <link rel="stylesheet" href="/css/style.css?v=3">
+    <link rel="stylesheet" href="/css/style.css?v=4">
     <!-- xterm.js — PTY terminal emulator -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
 </head>
@@ -85,6 +85,10 @@
                 <button class="menu-item" data-target="page-servers">
                     <i class="fa-solid fa-server"></i>
                     <span>Servers List</span>
+                </button>
+                <button class="menu-item" data-target="page-containers">
+                    <i class="fa-brands fa-docker"></i>
+                    <span>Containers</span>
                 </button>
             </nav>
             
@@ -229,7 +233,54 @@
                 </div>
             </section>
 
-            <!-- ================= VIEW 3: SERVER DETAIL METRICS ================= -->
+            <!-- ================= VIEW 3: CONTAINERS ================= -->
+            <section id="page-containers" class="page-view hidden">
+                <div class="containers-layout">
+                    <!-- Sidebar filters -->
+                    <aside class="containers-sidebar card">
+                        <div class="sidebar-section">
+                            <div class="sidebar-section-title">Servers</div>
+                            <div id="containers-filter-servers"></div>
+                        </div>
+                        <div class="sidebar-section">
+                            <div class="sidebar-section-title">Status</div>
+                            <div id="containers-filter-status"></div>
+                        </div>
+                        <div class="sidebar-section">
+                            <div class="sidebar-section-title">Runtime</div>
+                            <div id="containers-filter-runtime"></div>
+                        </div>
+                    </aside>
+                    <!-- Container table -->
+                    <div class="containers-main">
+                        <div class="table-container card" style="padding:0;overflow:visible">
+                            <table class="containers-table">
+                                <thead>
+                                    <tr>
+                                        <th>Status</th>
+                                        <th>Name</th>
+                                        <th>Server</th>
+                                        <th>Runtime</th>
+                                        <th>Image</th>
+                                        <th>CPU</th>
+                                        <th>RAM</th>
+                                        <th>Ports</th>
+                                        <th>Uptime</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="containers-table-body"></tbody>
+                            </table>
+                            <div class="no-data-table hidden" id="containers-empty-state">
+                                <i class="fa-brands fa-docker icon"></i>
+                                <p>No containers found. Make sure Docker is running on a monitored server.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ================= VIEW 4: SERVER DETAIL METRICS ================= -->
             <section id="page-server-detail" class="page-view hidden">
                 <div class="back-link-wrapper">
                     <button class="btn btn-secondary btn-sm" id="btn-back-to-dashboard">
@@ -552,6 +603,6 @@
     <div id="shell-windows"></div>
     <!-- Minimized shells taskbar -->
     <div id="shell-taskbar"></div>
-<script src="/js/app.js?v=3"></script>
+<script src="/js/app.js?v=4"></script>
 </body>
 </html>
