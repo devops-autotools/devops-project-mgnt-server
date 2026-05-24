@@ -2028,3 +2028,276 @@ tr:hover .btn-tag-edit { opacity: 1; }
     background: rgba(99, 102, 241, 0.2);
     color: #e2e8f0;
 }
+
+/* =========================================================================
+   PTY SHELL FLOATING WINDOWS
+   ========================================================================= */
+
+#shell-windows {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1000;
+}
+
+.shell-window {
+    position: fixed;
+    min-width: 480px;
+    min-height: 300px;
+    width: min(1200px, 92vw);
+    height: min(78vh, 900px);
+    background: rgba(11, 15, 25, 0.96);
+    border: 1px solid rgba(59, 130, 246, 0.25);
+    border-radius: 10px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255,255,255,0.04);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    pointer-events: all;
+    backdrop-filter: blur(20px);
+    transition: box-shadow var(--transition-fast);
+    resize: both;
+}
+
+.shell-window:focus-within {
+    border-color: rgba(59, 130, 246, 0.5);
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(59, 130, 246, 0.15), 0 0 32px rgba(59, 130, 246, 0.08);
+}
+
+.shell-window.shell-minimized {
+    display: none;
+}
+
+/* --- Titlebar --- */
+.shell-titlebar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px;
+    height: 38px;
+    min-height: 38px;
+    background: rgba(17, 24, 39, 0.85);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    cursor: move;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.shell-title-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+}
+
+.shell-title-icon {
+    font-size: 0.95rem;
+    flex-shrink: 0;
+    opacity: 0.8;
+}
+
+.shell-title-name {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-heading);
+}
+
+/* --- Status badge --- */
+.shell-status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    flex-shrink: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.shell-status-badge::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+.shell-status-badge.shell-connecting {
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--warning);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+}
+.shell-status-badge.shell-connecting::before {
+    background: var(--warning);
+    animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+.shell-status-badge.shell-connected {
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--success);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+.shell-status-badge.shell-connected::before {
+    background: var(--success);
+}
+
+.shell-status-badge.shell-closed {
+    background: rgba(156, 163, 175, 0.12);
+    color: var(--text-muted);
+    border: 1px solid rgba(156, 163, 175, 0.2);
+}
+.shell-status-badge.shell-closed::before {
+    background: var(--text-muted);
+}
+
+.shell-status-badge.shell-error {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--danger);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+.shell-status-badge.shell-error::before {
+    background: var(--danger);
+}
+
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: 0.4; transform: scale(0.7); }
+}
+
+/* --- Window control buttons --- */
+.shell-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.shell-ctrl-btn {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    transition: opacity var(--transition-fast), transform var(--transition-fast);
+    opacity: 0.7;
+    padding: 0;
+}
+
+.shell-ctrl-btn:hover {
+    opacity: 1;
+    transform: scale(1.12);
+}
+
+.shell-ctrl-btn.minimize-btn {
+    background: rgba(245, 158, 11, 0.35);
+    color: #f59e0b;
+}
+
+.shell-ctrl-btn.close-btn {
+    background: rgba(239, 68, 68, 0.35);
+    color: #ef4444;
+}
+
+/* --- xterm.js container --- */
+.shell-body {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    background: #0d0d0d;
+    padding: 6px;
+}
+
+.shell-body .xterm {
+    height: 100%;
+}
+
+.shell-body .xterm-viewport {
+    border-radius: 0 0 8px 8px;
+}
+
+/* --- Taskbar for minimized shells --- */
+#shell-taskbar {
+    position: fixed;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: rgba(11, 15, 25, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: none;
+    border-radius: 10px 10px 0 0;
+    backdrop-filter: blur(20px);
+    z-index: 2000;
+    pointer-events: all;
+    min-width: 0;
+    max-width: 90vw;
+    flex-wrap: wrap;
+}
+
+#shell-taskbar:empty {
+    display: none;
+}
+
+.taskbar-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: rgba(31, 41, 55, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    max-width: 200px;
+    overflow: hidden;
+}
+
+.taskbar-item-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+}
+
+.taskbar-restore {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0 4px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    transition: color var(--transition-fast);
+    flex-shrink: 0;
+}
+
+.taskbar-restore:hover { color: var(--primary); }
+
+.taskbar-close {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0 2px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    transition: color var(--transition-fast);
+    flex-shrink: 0;
+}
+
+.taskbar-close:hover { color: var(--danger); }

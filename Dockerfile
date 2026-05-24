@@ -1,12 +1,21 @@
-# Stage 1: Build the Go binary
+# Stage 1: Build server + agent binaries
 FROM golang:alpine AS builder
 
 WORKDIR /app
 
-COPY go.mod ./
+COPY go.mod go.sum ./
+RUN go mod download
+
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o mgnt-server main.go
+# Build agent binaries for common Linux architectures
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" \
+      -o public/downloads/agent-linux-amd64 ./cmd/agent/
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s" \
+      -o public/downloads/agent-linux-arm64 ./cmd/agent/
+
+# Build server binary (current arch — Alpine builder is amd64)
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o mgnt-server .
 
 # Stage 2: Minimal production container
 FROM alpine:3.19

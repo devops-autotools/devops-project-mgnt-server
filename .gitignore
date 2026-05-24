@@ -15,6 +15,9 @@ config.json
 *.test
 *.out
 
+# Agent binaries (built by Dockerfile, not committed)
+public/downloads/agent-*
+
 # Editor
 .vscode/
 .idea/
