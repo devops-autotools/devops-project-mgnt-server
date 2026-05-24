@@ -1,6 +1,6 @@
 # mgnt-server — Secure Server Management Dashboard
 
-A lightweight, zero-dependency Go server monitoring and remote management tool. Monitor CPU, RAM, Disk, and Uptime of any Linux server from a single web dashboard — no SSH, no firewall holes, no external packages.
+A lightweight Go server monitoring and remote management tool. Monitor CPU, RAM, Disk, Uptime, and containers (Docker + Kubernetes) from a single web dashboard — no SSH, no firewall holes required.
 
 ---
 
@@ -9,26 +9,26 @@ A lightweight, zero-dependency Go server monitoring and remote management tool. 
 **mgnt-server** works on a **reverse-polling** model:
 
 ```
-[Target Server] ──outbound HTTPS POST──▶ [mgnt-server dashboard]
+[Target Server] ──outbound HTTPS──▶ [mgnt-server dashboard]
 ```
 
-The target server runs a small bash **agent** that calls home every 5 seconds with telemetry data. The dashboard can queue shell commands back to the agent via long-poll. The agent communicates over a dedicated TLS-only port (8443) — no inbound SSH required on the target server.
+Each target server runs a compiled Go **agent** binary that reports telemetry every 5 seconds and maintains a long-poll connection for receiving commands. The agent also opens a WebSocket PTY bridge for live interactive shell sessions. All agent traffic runs on a dedicated TLS-only port (8443).
 
 ---
 
 ## Features
 
-- **Real-time telemetry** — CPU usage, RAM (used/free/total), Disk (used/free/total), uptime, OS
-- **Web terminal** — Execute shell commands on any connected server directly from the browser with history navigation and Tab autocomplete
-- **Dashboard overview** — Online/offline status, average CPU & RAM across all servers
-- **Tag system** — Create color-coded tags, assign to servers, filter dashboard by tag
-- **Secure session auth** — Cookie-based session, 24-hour expiry, in-memory cleanup
-- **One-line agent install** — `curl -fsSL http://<server>/agent/install/<token> | bash`
-- **Zero dependencies** — Pure Go standard library (`net/http`), no frameworks
-- **Docker-ready** — Multi-stage Dockerfile, non-root container, docker-compose included
-- **Auto-config** — Generates random password and TLS certs on first run
-- **TLS agent channel** — Agent uses HTTPS with embedded CA cert, no cert pinning issues
-- **Dark glassmorphism UI** — Vanilla JS SPA, no frontend framework
+- **Real-time telemetry** — CPU, RAM (used/free/total), Disk, uptime, OS info
+- **Container page** — Docker containers and Kubernetes pods across all servers in one view; filter by runtime, server, or namespace
+- **K8s shell / logs** — `kubectl exec` into any running pod directly from the browser; stream pod logs with `kubectl logs -f`
+- **PTY web terminal** — Full interactive shell sessions via xterm.js + WebSocket PTY bridge; resize support, history, tab autocomplete
+- **Command terminal** — Queue shell commands on any server, results streamed via SSE
+- **Tag system** — Color-coded tags, assign to servers, filter dashboard
+- **Single-instance agent** — flock-based PID file prevents duplicate agent processes
+- **Zero-inbound model** — Agent initiates all connections outbound; no firewall rules needed on target servers
+- **Auto-config** — Random password and TLS certs generated on first run
+- **Docker-ready** — Multi-stage Dockerfile, non-root Alpine container, docker-compose included
+- **Dark glassmorphism UI** — Vanilla JS SPA, no frontend framework or build step
 
 ---
 
@@ -38,34 +38,25 @@ The target server runs a small bash **agent** that calls home every 5 seconds wi
 
 ```bash
 docker-compose up -d
-```
-
-On first run, the server auto-generates `data/.env` with a random admin password and TLS certificates in `data/tls/`. The generated password is printed to the container log:
-
-```bash
 docker logs secure-server-manager | grep PASSWORD
 ```
 
-Open: `http://localhost:8080`
+Open `http://localhost:8080` and log in with the printed password.
 
 ### Option 2: Run Binary Directly
 
 ```bash
-# Build
-go build -o mgnt-server main.go
-
-# Run (default port 8080)
+CGO_ENABLED=0 go build -o mgnt-server .
 ./mgnt-server
 ```
 
-Open: `http://localhost:8080`  
-On first run, check stdout for the generated admin password.
+Open `http://localhost:8080`. Check stdout for the generated admin password on first run.
 
 ---
 
 ## Configuration
 
-Configuration is stored in `data/.env` (auto-created on first run, persisted via Docker volume):
+Stored in `data/.env` (auto-created, persisted via Docker volume):
 
 ```env
 MGNT_PORT=8080               # browser HTTP port
@@ -81,61 +72,106 @@ MGNT_SESSION_SECRET=<random> # generated on first run
 
 ## Adding a Server
 
-1. Open the dashboard → click **Add New Server**
-2. Enter a friendly name (e.g. `prod-db-01`)
-3. Copy the generated install command:
-   ```bash
-   curl -fsSL http://<dashboard-ip>:8080/agent/install/<token> | bash
-   ```
-4. Run this command on the **target server** (no root required)
-5. The dashboard shows the server online once the agent checks in
+### Option A — bash installer (any Linux server)
 
-The agent installs itself to `~/.mgnt-agent/agent.sh` and runs as a background daemon via `nohup`.
+1. Open the dashboard → click **Add New Server**
+2. Copy the generated install command and run it on the target server:
+   ```bash
+   curl -fsSL http://<dashboard>:8080/agent/install/<token> | bash
+   ```
+3. The server appears online within seconds.
+
+### Option B — binary installer (Go agent, recommended)
+
+```bash
+curl -fsSL http://<dashboard>:8080/agent/install2/<token> | bash
+```
+
+Downloads a pre-built Go binary (`agent-linux-amd64` or `arm64`) and runs it directly. Provides:
+- PTY shell sessions (full interactive terminal in the browser)
+- Container telemetry (Docker + Kubernetes)
+- Single-instance flock — prevents duplicate agent processes
+
+The agent installs to `~/.mgnt-agent/agent` and persists as a background process. PID is tracked at `~/.mgnt-agent/agent.pid`.
 
 ---
 
-## Tag System
+## Container Page
 
-- Create color-coded tags from **Servers → Manage Tags**
-- Assign tags to any server from the Servers list (tag icon button)
-- Filter the Servers list by clicking tag pills in the filter bar
-- Tags persist across restarts in `data/tags.json`
+The **Containers** page aggregates Docker containers and Kubernetes pods across all connected servers.
+
+| Column | Notes |
+|--------|-------|
+| Status | `running` / `exited` / `paused` |
+| Name | Container/pod name; namespace shown as sub-label for K8s |
+| Server | Which server manages this container |
+| Runtime | `K8s` or `Docker` badge |
+| Image | Truncated with hover tooltip |
+| CPU / RAM | Live metrics (requires metrics-server for K8s) |
+| Ports | Exposed ports; truncated with hover tooltip |
+| Uptime | Age since container/pod started |
+| Actions | Stop / Start / Restart; expand row for Shell / Logs |
+
+Clicking a row expands a detail panel with full info and **Shell (exec)** / **Logs** buttons.
+
+### K8s requirements
+- `kubectl` must be installed and configured on the server running the agent
+- Metrics (`kubectl top`) requires **metrics-server** in the cluster
+
+---
+
+## PTY Shell Sessions
+
+Clicking **Shell** on a server or container opens a floating xterm.js terminal window:
+
+| Target | Command |
+|--------|---------|
+| Host server | `bash -i` on the agent host |
+| Docker container | `docker exec -it <id> sh` |
+| K8s pod | `kubectl exec -it <pod> -n <ns> -c <ctr> -- sh` |
+| K8s logs | `kubectl logs -f --tail=200 -n <ns> <pod> -c <ctr>` |
+
+Multiple shell windows can be open simultaneously. Each is an independent PTY bridge over WebSocket.
 
 ---
 
 ## Agent Behavior
 
-The agent runs two independent loops:
+The Go agent binary runs four concurrent routines:
 
-| Loop | Behavior |
-|------|----------|
-| **Telemetry** (background) | POST CPU/RAM/Disk to `/agent/report` every 5s |
-| **Command** (foreground) | Long-poll `GET /agent/cmd/wait/<token>` — blocks 25s, retries on timeout |
-
-CPU sampling uses `/proc/stat`. RAM uses `/proc/meminfo`. All pure bash + `awk`, no external tools needed.
-
-### Commands handled specially
-
-| Command | Behavior |
+| Routine | Behavior |
 |---------|----------|
-| `top` | Converted to `top -b -n 1` (batch mode) |
-| `htop` | Converted to `TERM=dumb htop --no-color` |
-| `vim`, `nano`, `vi` | Returns info message (interactive editors not supported) |
-| `less`, `more` | Converted to `cat` |
-| `man <cmd>` | `MANPAGER=cat man <cmd>` |
-| `watch` | Returns info message |
-| `clear`, `reset` | Handled client-side (clears terminal UI only) |
+| **CPU sampler** | Reads `/proc/stat` every second, maintains rolling CPU% |
+| **Telemetry loop** | POST to `/agent/report` every 5s (CPU, RAM, Disk, containers) |
+| **Command loop** | Long-poll `GET /agent/cmd/wait/<token>?v=2` — blocks 25s, handles `exec` and `shell` commands |
+| **Shell handler** | Per-session goroutine: opens PTY, runs command, bridges to WebSocket |
 
-`cd` state is preserved between commands within a terminal session.
+### Command remapping (exec terminal)
+
+| Input | Remapped to |
+|-------|-------------|
+| `top` | `top -b -n 1` |
+| `htop` | `TERM=dumb htop --no-color` |
+| `vim`, `nano`, `vi` | Info message (use Shell PTY instead) |
+| `less`, `more` | `cat` |
+| `man <cmd>` | `MANPAGER=cat man <cmd>` |
+| `watch` | Info message |
+| `clear`, `reset` | Handled client-side |
+
+`cd` state is preserved across commands within a terminal session.
+
+### Single-instance protection
+
+At startup the agent acquires an exclusive non-blocking `flock` on `~/.mgnt-agent/agent.pid`. A second instance exits immediately with a log message — prevents stale old binaries from stealing shell sessions.
 
 ---
 
 ## TLS Agent Channel
 
-- Agent endpoints run on **HTTPS port 8443 only** — HTTP port 8080 returns 404 for agent paths
+- All agent endpoints run on **HTTPS port 8443 only** — HTTP 8080 returns 404 for agent paths
 - ECDSA P-256 CA + server cert auto-generated in `data/tls/` on first run
-- Agent install script embeds the CA cert PEM → full TLS verification without needing the server IP in the cert
-- Agent uses `curl --cacert ca.crt --resolve mgnt-server.local:8443:<ip>` for certificate validation
+- Server cert SAN: `DNS:mgnt-server.local`
+- Agent embeds the CA cert PEM and uses `--resolve` to map the virtual hostname to the real IP — full TLS verification without public DNS
 
 ---
 
@@ -145,49 +181,66 @@ CPU sampling uses `/proc/stat`. RAM uses `/proc/meminfo`. All pure bash + `awk`,
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/auth/login` | Login `{"username":"...","password":"..."}` |
+| `POST` | `/api/auth/login` | `{"username":"...","password":"..."}` |
 | `POST` | `/api/auth/logout` | Invalidate session |
 | `GET` | `/api/auth/check` | Check session validity |
 
-### Servers (requires auth cookie)
+### Servers (auth required)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/servers` | List all servers with metrics |
-| `POST` | `/api/servers/add` | Add server `{"name":"..."}` → returns token |
+| `GET` | `/api/servers` | List all servers with live metrics |
+| `POST` | `/api/servers/add` | Add server `{"name":"..."}` → token |
 | `DELETE` | `/api/servers/{id}` | Remove server |
 | `POST` | `/api/servers/execute/{id}` | Queue shell command `{"command":"..."}` |
 | `GET` | `/api/servers/terminal/stream/{id}` | SSE stream for command results |
+| `GET` | `/api/servers/shell/{id}/ws/{session_id}` | WebSocket PTY shell (browser side) |
 
-### Tags (requires auth cookie)
+### Containers (auth required)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/tags` | List all tags |
-| `POST` | `/api/tags` | Create tag `{"name":"...","color":"..."}` |
-| `DELETE` | `/api/tags/{name}` | Delete tag (also removes from all servers) |
-| `PUT` | `/api/servers/{id}/tags` | Set server tags `{"tags":["..."]}` |
+| `GET` | `/api/containers` | All containers across all servers |
+| `POST` | `/api/servers/{id}/containers/{cid}/action` | `{"action":"start"\|"stop"\|"restart"}` |
+
+### Tags (auth required)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/tags` | List tags |
+| `POST` | `/api/tags` | Create `{"name":"...","color":"..."}` |
+| `DELETE` | `/api/tags/{name}` | Delete (also removes from all servers) |
+| `PUT` | `/api/servers/{id}/tags` | Set tags `{"tags":["..."]}` |
 
 ### Agent (TLS port 8443 only)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/agent/install/{token}` | Download agent installer script |
-| `POST` | `/agent/report` | Telemetry + token auth |
-| `GET` | `/agent/cmd/wait/{token}` | Long-poll for queued command |
-| `POST` | `/agent/report/result` | Submit command result |
+| `GET` | `/agent/install/{token}` | bash installer script |
+| `GET` | `/agent/install2/{token}` | Go binary installer script |
+| `POST` | `/agent/report` | Telemetry payload |
+| `GET` | `/agent/cmd/wait/{token}` | Long-poll command queue |
+| `POST` | `/agent/report/result` | Command result submission |
+| `GET` | `/agent/shell/{session_id}/ws` | WebSocket PTY bridge (agent side) |
 
 ---
 
 ## Deployment
 
-### Build (Alpine container requires CGO_ENABLED=0)
+### Build
 
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o mgnt-server main.go
+# Server binary (Alpine container requires CGO_ENABLED=0)
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o mgnt-server .
+
+# Agent binaries (multi-arch)
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o public/downloads/agent-linux-amd64 ./cmd/agent/
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64  go build -ldflags="-w -s" -o public/downloads/agent-linux-arm64  ./cmd/agent/
 ```
 
-### Deploy binary + static files to container
+The Dockerfile handles all of this automatically — agent binaries are placed in `public/downloads/` and served by the dashboard.
+
+### Deploy to container
 
 ```bash
 rsync -az mgnt-server ubuntu@<host>:~/mgnt-server/
@@ -200,13 +253,14 @@ ssh ubuntu@<host> "
 "
 ```
 
-### Reinstall agent (only when agent script changes)
+### Reinstall agent on a target server
 
 ```bash
 ssh ubuntu@<agent-server> "
   kill \$(cat ~/.mgnt-agent/agent.pid 2>/dev/null) 2>/dev/null
-  curl -fsSL http://<dashboard>:8080/agent/install/<token> -o /tmp/agent.sh
-  bash /tmp/agent.sh > /tmp/agent-install.log 2>&1 &
+  curl -fsSL http://<dashboard>:8080/agent/install2/<token> -o /tmp/agent-new
+  chmod +x /tmp/agent-new && cp /tmp/agent-new ~/.mgnt-agent/agent
+  nohup ~/.mgnt-agent/agent >> ~/.mgnt-agent/agent.log 2>&1 &
 "
 ```
 
@@ -216,33 +270,38 @@ ssh ubuntu@<agent-server> "
 
 ```
 mgnt-server/
-├── main.go              # All backend logic (Go stdlib only)
-├── go.mod               # Go module (no external deps)
-├── Dockerfile           # Multi-stage Docker build (non-root, Alpine)
-├── docker-compose.yml   # One-command deployment
-├── CLAUDE.md            # AI assistant context & dev guide
-├── DOCS.md              # Extended technical documentation
-├── data/                # Runtime data — NOT committed
-│   ├── .env             # Auto-generated credentials & ports
-│   ├── servers.json     # Persisted server registry
-│   ├── tags.json        # Persisted tag definitions
-│   └── tls/             # Auto-generated CA + server TLS certs
-└── public/
-    ├── index.html       # SPA shell
-    ├── css/style.css    # Dark glassmorphism design system
-    └── js/app.js        # Frontend logic (vanilla JS)
+├── main.go                    # All backend logic
+├── go.mod / go.sum            # Go module (gorilla/websocket)
+├── Dockerfile                 # Multi-stage: builds server + agent binaries
+├── docker-compose.yml
+├── CLAUDE.md                  # AI assistant context & dev guide
+├── cmd/
+│   └── agent/
+│       └── main.go            # Go agent binary (PTY, telemetry, K8s)
+├── public/
+│   ├── index.html             # SPA shell
+│   ├── css/style.css          # Dark glassmorphism design
+│   ├── js/app.js              # Frontend SPA logic (vanilla JS)
+│   └── downloads/
+│       ├── agent-linux-amd64  # Pre-built agent (gitignored)
+│       └── agent-linux-arm64
+└── data/                      # Runtime data — NOT committed
+    ├── .env                   # Credentials & ports
+    ├── servers.json           # Server registry
+    ├── tags.json              # Tag definitions
+    └── tls/                   # CA + TLS certs
 ```
 
 ---
 
 ## Security Notes
 
-- Sessions are **in-memory only** — restart clears all sessions
+- Sessions are **in-memory only** — server restart clears all sessions
 - Agent tokens are random 32-char hex strings (128-bit entropy)
-- Cookie is `HttpOnly` — set `Secure: true` when behind HTTPS reverse proxy
-- No CORS headers — serve from same origin
-- Agent runs as the installing user, not root
-- Container runs as non-root user (UID 1000)
+- Cookie is `HttpOnly`; set `Secure: true` when behind an HTTPS reverse proxy
+- No CORS headers — serve from same origin only
+- Agent runs as the installing user, never root
+- Container runs as non-root (UID 1000)
 - TLS private keys live only in `data/tls/` (volume-mounted, gitignored)
 
 ---
@@ -250,11 +309,14 @@ mgnt-server/
 ## Development Workflow
 
 ```bash
-# Local dev
+# Local dev server
 go run main.go
 
-# Add a test server, copy the curl command, run it:
+# Install test agent (bash)
 curl -fsSL http://localhost:8080/agent/install/<token> | bash
+
+# Install test agent (Go binary)
+curl -fsSL http://localhost:8080/agent/install2/<token> | bash
 
 # Watch agent log
 tail -f ~/.mgnt-agent/agent.log
@@ -267,7 +329,8 @@ kill $(cat ~/.mgnt-agent/agent.pid)
 
 ## Environment
 
-- **Language**: Go 1.22 (standard library only)
+- **Language**: Go 1.22
+- **External dependency**: `github.com/gorilla/websocket v1.5.3` (PTY shell WebSocket)
 - **Frontend**: Vanilla JS + CSS (no build step)
 - **Persistence**: JSON files (`data/servers.json`, `data/tags.json`)
 - **Tested on**: Ubuntu 22.04, Ubuntu 24.04
