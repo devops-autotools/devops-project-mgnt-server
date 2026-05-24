@@ -330,11 +330,12 @@ function switchView(viewId) {
     el.pageDashboard.classList.add('hidden');
     el.pageServers.classList.add('hidden');
     el.pageServerDetail.classList.add('hidden');
-    
+    document.getElementById('page-containers').classList.add('hidden');
+
     // Show selected view
     document.getElementById(viewId).classList.remove('hidden');
     state.currentView = viewId;
-    
+
     // Update headers text dynamically
     if (viewId === 'page-dashboard') {
         el.pageTitle.innerText = 'Infrastructure Dashboard';
@@ -347,6 +348,10 @@ function switchView(viewId) {
     } else if (viewId === 'page-server-detail') {
         el.pageTitle.innerText = 'Telemetry Deep-Dive';
         el.pageSubtitle.innerText = 'Granular performance stats, memory analytics, and uptime records.';
+        el.btnAddServerTrigger.classList.add('hidden');
+    } else if (viewId === 'page-containers') {
+        el.pageTitle.innerText = 'Containers';
+        el.pageSubtitle.innerText = 'Docker and Kubernetes containers across all monitored servers.';
         el.btnAddServerTrigger.classList.add('hidden');
     }
     
@@ -411,13 +416,15 @@ function calculateOverviewStats() {
 
 function renderViews() {
     const now = new Date();
-    
+
     if (state.currentView === 'page-dashboard') {
         renderDashboardView(now);
     } else if (state.currentView === 'page-servers') {
         renderServersTableView(now);
     } else if (state.currentView === 'page-server-detail') {
         renderServerDetailsView(now);
+    } else if (state.currentView === 'page-containers') {
+        renderContainersView();
     }
 }
 
@@ -835,8 +842,34 @@ window.openTerminalShell = function(serverId, serverName) {
     openShell(serverId, serverName);
 };
 
-function openShell(serverId, serverName) {
+// Called by container Shell/Logs buttons
+window.openContainerShell = function(serverId, serverName, containerId, shellMode) {
+    openShell(serverId, serverName, containerId, shellMode);
+};
+
+// containerAction: queues docker start/stop/restart on a server's agent.
+window.containerAction = async function(serverId, containerId, action) {
+    try {
+        const res = await fetch(`/api/servers/${serverId}/containers/${containerId}/action`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        showToast(`Container ${action} queued`);
+        // Refresh containers after a short delay
+        setTimeout(() => { if (state.currentView === 'page-containers') renderContainersView(); }, 2000);
+    } catch (e) {
+        showToast(`Action failed: ${e.message}`, true);
+    }
+};
+
+function openShell(serverId, serverName, containerId = '', shellMode = '') {
     const sessionId = genSessionId();
+
+    const titleSuffix = containerId
+        ? (shellMode === 'logs' ? ` › logs` : ` › exec`)
+        : '';
 
     // Build floating window element
     const win = document.createElement('div');
@@ -847,7 +880,7 @@ function openShell(serverId, serverName) {
         <div class="shell-titlebar" data-session="${sessionId}">
             <div class="shell-title-info">
                 <i class="fa-solid fa-terminal"></i>
-                <span class="shell-title-name">${escHTML(serverName)}</span>
+                <span class="shell-title-name">${escHTML(serverName)}${escHTML(titleSuffix)}</span>
                 <span class="shell-status-badge shell-connecting">Connecting…</span>
             </div>
             <div class="shell-controls">
@@ -891,7 +924,9 @@ function openShell(serverId, serverName) {
 
     // WebSocket to server bridge
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}/api/servers/shell/${serverId}/ws/${sessionId}`);
+    let wsURL = `${proto}://${location.host}/api/servers/shell/${serverId}/ws/${sessionId}`;
+    if (containerId) wsURL += `?container=${encodeURIComponent(containerId)}&mode=${encodeURIComponent(shellMode)}`;
+    const ws = new WebSocket(wsURL);
     ws.binaryType = 'arraybuffer';
 
     const session = { term, ws, fitAddon, winEl: win, serverId, serverName, minimized: false, observer: null };
@@ -1140,3 +1175,172 @@ function escHTML(str) {
 }
 
 function escapeHTML(str) { return escHTML(str); }
+
+// ===== CONTAINERS PAGE =====
+
+// Active filter state for the containers page
+const containerFilters = {
+    server: 'all',
+    status: 'all',
+    runtime: 'all',
+};
+
+async function renderContainersView() {
+    let containers;
+    try {
+        const res = await fetch('/api/containers');
+        if (!res.ok) throw new Error('fetch failed');
+        containers = await res.json() || [];
+    } catch (_) {
+        containers = [];
+    }
+
+    renderContainerSidebar(containers);
+    renderContainerTable(containers);
+}
+
+function renderContainerSidebar(all) {
+    // Collect unique server names/ids
+    const serverMap = {};
+    all.forEach(c => { serverMap[c.server_id] = c.server_name; });
+
+    const statuses = ['running', 'exited', 'paused', 'created'];
+    const runtimes = ['docker', 'k8s'];
+
+    const mkItem = (id, label, filterKey, value, countFn) => {
+        const count = value === 'all' ? all.length : all.filter(c => countFn(c, value)).length;
+        const active = containerFilters[filterKey] === value ? ' active' : '';
+        return `<div class="sidebar-filter-item${active}" onclick="setContainerFilter('${filterKey}','${escHTML(value)}')">${escHTML(label)} <span style="margin-left:auto;opacity:.6;font-size:.72rem">${count}</span></div>`;
+    };
+
+    document.getElementById('containers-filter-servers').innerHTML =
+        mkItem('all', 'All Servers', 'server', 'all', () => true) +
+        Object.entries(serverMap).map(([id, name]) =>
+            mkItem(id, name, 'server', id, (c) => c.server_id === id)
+        ).join('');
+
+    document.getElementById('containers-filter-status').innerHTML =
+        mkItem('all', 'All', 'status', 'all', () => true) +
+        statuses.map(s =>
+            mkItem(s, s.charAt(0).toUpperCase() + s.slice(1), 'status', s, (c) => c.status === s)
+        ).join('');
+
+    document.getElementById('containers-filter-runtime').innerHTML =
+        mkItem('all', 'All', 'runtime', 'all', () => true) +
+        runtimes.map(r =>
+            mkItem(r, r === 'k8s' ? 'Kubernetes' : 'Docker', 'runtime', r, (c) => c.runtime === r)
+        ).join('');
+}
+
+function renderContainerTable(all) {
+    // Apply filters
+    const filtered = all.filter(c => {
+        if (containerFilters.server  !== 'all' && c.server_id !== containerFilters.server) return false;
+        if (containerFilters.status  !== 'all' && c.status    !== containerFilters.status)  return false;
+        if (containerFilters.runtime !== 'all' && c.runtime   !== containerFilters.runtime) return false;
+        return true;
+    });
+
+    const tbody = document.getElementById('containers-table-body');
+    const empty = document.getElementById('containers-empty-state');
+
+    if (filtered.length === 0) {
+        tbody.innerHTML = '';
+        empty.classList.remove('hidden');
+        return;
+    }
+    empty.classList.add('hidden');
+
+    const formatBytes = (b) => {
+        if (!b || b === 0) return '—';
+        const mb = b / (1024 * 1024);
+        return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : mb.toFixed(0) + ' MB';
+    };
+
+    tbody.innerHTML = filtered.map((c, idx) => {
+        const statusDot = `<span class="container-status-dot ${escHTML(c.status)}">${escHTML(c.status)}</span>`;
+        const rtBadge = `<span class="runtime-badge ${escHTML(c.runtime)}">${c.runtime === 'k8s' ? 'K8s' : 'Docker'}</span>`;
+        const portsAll = (c.ports && c.ports.length) ? c.ports.join(', ') : '';
+        const ports = portsAll ? `<span class="container-ports" title="${escHTML(portsAll)}">${escHTML(portsAll)}</span>` : '<span style="color:var(--text-muted)">—</span>';
+        const cpu = (c.cpu && c.cpu > 0) ? c.cpu.toFixed(1) + '%' : '—';
+        const ram = formatBytes(c.ram);
+        const ns = c.namespace ? `<span class="container-ns">${escHTML(c.namespace)}</span>` : '';
+
+        const rowId = `ctr-row-${idx}`;
+        const detailId = `ctr-detail-${idx}`;
+
+        // Action buttons — only show relevant ones
+        const isRunning = c.status === 'running';
+        const actionBtns = `
+            <div class="container-row-actions">
+                ${isRunning ? `<button class="btn-container-action btn-ca-stop" onclick="event.stopPropagation();containerAction('${escHTML(c.server_id)}','${escHTML(c.id)}','stop')">■ Stop</button>` : ''}
+                ${isRunning ? `<button class="btn-container-action btn-ca-restart" onclick="event.stopPropagation();containerAction('${escHTML(c.server_id)}','${escHTML(c.id)}','restart')">⟳</button>` : ''}
+                ${!isRunning ? `<button class="btn-container-action btn-ca-start" onclick="event.stopPropagation();containerAction('${escHTML(c.server_id)}','${escHTML(c.id)}','start')">▶ Start</button>` : ''}
+                <i class="fa-solid fa-chevron-right container-expand-chevron"></i>
+            </div>`;
+
+        return `
+            <tr class="container-row" id="${rowId}" onclick="toggleContainerDetail('${rowId}','${detailId}')">
+                <td>${statusDot}</td>
+                <td><span class="container-name">${escHTML(c.name)}</span>${ns}</td>
+                <td><span class="container-server">${escHTML(c.server_name)}</span></td>
+                <td>${rtBadge}</td>
+                <td><span class="container-image" title="${escHTML(c.image)}">${escHTML(c.image)}</span></td>
+                <td>${cpu}</td>
+                <td>${ram}</td>
+                <td>${ports}</td>
+                <td style="color:var(--text-muted);font-size:.78rem">${escHTML(c.uptime || '—')}</td>
+                <td>${actionBtns}</td>
+            </tr>
+            <tr class="container-detail-row hidden" id="${detailId}">
+                <td colspan="10">
+                    <div class="container-detail-inner">
+                        <div class="container-detail-grid">
+                            <div class="container-detail-item">
+                                <span class="container-detail-label">Container ID</span>
+                                <span class="container-detail-value">${escHTML(c.id)}</span>
+                            </div>
+                            <div class="container-detail-item">
+                                <span class="container-detail-label">Image</span>
+                                <span class="container-detail-value">${escHTML(c.image)}</span>
+                            </div>
+                            <div class="container-detail-item">
+                                <span class="container-detail-label">Ports</span>
+                                <span class="container-detail-value">${escHTML((c.ports || []).join(', ') || '—')}</span>
+                            </div>
+                            <div class="container-detail-item">
+                                <span class="container-detail-label">Uptime</span>
+                                <span class="container-detail-value">${escHTML(c.uptime || '—')}</span>
+                            </div>
+                            <div class="container-detail-item">
+                                <span class="container-detail-label">Runtime</span>
+                                <span class="container-detail-value">${c.runtime === 'k8s' ? 'Kubernetes' : 'Docker'}${c.namespace ? ' · ' + escHTML(c.namespace) : ''}</span>
+                            </div>
+                            <div class="container-detail-item">
+                                <span class="container-detail-label">CPU / RAM</span>
+                                <span class="container-detail-value">${cpu !== '—' ? cpu : (c.runtime === 'k8s' ? 'N/A' : '—')} · ${ram !== '—' ? ram : (c.runtime === 'k8s' ? 'N/A' : '—')}</span>
+                            </div>
+                        </div>
+                        <div class="container-detail-actions">
+                            <button class="btn-container-action btn-ca-shell" onclick="openContainerShell('${escHTML(c.server_id)}','${escHTML(c.server_name)}','${escHTML(c.id)}','exec')"><i class="fa-solid fa-terminal"></i> Shell (exec)</button>
+                            <button class="btn-container-action btn-ca-logs" onclick="openContainerShell('${escHTML(c.server_id)}','${escHTML(c.server_name)}','${escHTML(c.id)}','logs')"><i class="fa-solid fa-file-lines"></i> Logs</button>
+                        </div>
+                    </div>
+                </td>
+            </tr>`;
+    }).join('');
+}
+
+window.toggleContainerDetail = function(rowId, detailId) {
+    const row    = document.getElementById(rowId);
+    const detail = document.getElementById(detailId);
+    if (!row || !detail) return;
+    const isOpen = !detail.classList.contains('hidden');
+    detail.classList.toggle('hidden', isOpen);
+    row.classList.toggle('expanded', !isOpen);
+};
+
+window.setContainerFilter = function(key, value) {
+    containerFilters[key] = value;
+    renderContainersView();
+};
