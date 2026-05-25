@@ -344,18 +344,22 @@ function switchView(viewId) {
         el.pageTitle.innerText = 'Infrastructure Dashboard';
         el.pageSubtitle.innerText = 'Real-time telemetry, active host statuses, and metric aggregations.';
         el.btnAddServerTrigger.classList.remove('hidden');
+        el.btnMultiShell.classList.add('hidden');
     } else if (viewId === 'page-servers') {
         el.pageTitle.innerText = 'Servers Inventory';
         el.pageSubtitle.innerText = 'Comprehensive server registry, specs, and status actions.';
         el.btnAddServerTrigger.classList.remove('hidden');
+        el.btnMultiShell.classList.remove('hidden');
     } else if (viewId === 'page-server-detail') {
         el.pageTitle.innerText = 'Telemetry Deep-Dive';
         el.pageSubtitle.innerText = 'Granular performance stats, memory analytics, and uptime records.';
         el.btnAddServerTrigger.classList.add('hidden');
+        el.btnMultiShell.classList.add('hidden');
     } else if (viewId === 'page-containers') {
         el.pageTitle.innerText = 'Containers';
         el.pageSubtitle.innerText = 'Docker and Kubernetes containers across all monitored servers.';
         el.btnAddServerTrigger.classList.add('hidden');
+        el.btnMultiShell.classList.add('hidden');
     }
     
     // Refresh display
