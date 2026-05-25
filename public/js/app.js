@@ -1100,6 +1100,7 @@ window.openMultiShell = function(count) {
     ms.panes = Array.from({ length: count }, () => ({
         sessionId: null, serverId: null, serverName: null,
         term: null, ws: null, fitAddon: null, connected: false, observer: null,
+        _bodyEl: null, _onPaste: null, _onMouseup: null,
     }));
     ms.active = true;
     ms.minimized = false;
@@ -1201,6 +1202,7 @@ function updateMsHeader() {
 
 window.togglePaneDropdown = function(paneIndex) {
     const dd = document.getElementById(`ms-pane-dropdown-${paneIndex}`);
+    if (!dd) return;
     const isHidden = dd.classList.contains('hidden');
     if (!isHidden) { dd.classList.add('hidden'); return; }
 
@@ -1209,10 +1211,10 @@ window.togglePaneDropdown = function(paneIndex) {
         ? `<div class="ms-server-dropdown-item offline">No servers registered</div>`
         : state.servers.map(s => {
             const online = s.connected && (now - new Date(s.last_report)) < 15000;
-            const onclick = online ? `connectPaneShell(${paneIndex},'${s.id}','${escHTML(s.name)}')` : '';
+            const onclick = online ? `connectPaneShell(${paneIndex},'${s.id}',${JSON.stringify(s.name)})` : '';
             return `<div class="ms-server-dropdown-item ${online ? '' : 'offline'}"
                 ${online ? `onclick="${onclick}"` : ''}
-                title="${online ? s.name : 'Server offline'}">
+                title="${escHTML(online ? s.name : 'Server offline')}">
                 <span style="font-size:0.65rem">${online ? '●' : '○'}</span>
                 ${escHTML(s.name)}
             </div>`;
@@ -1235,9 +1237,19 @@ window.connectPaneShell = function(paneIndex, serverId, serverName) {
     if (!pane) return;
 
     // Tear down any existing session in this pane
-    if (pane.ws) pane.ws.close();
+    if (pane.ws) {
+        pane.ws.onclose = null;
+        pane.ws.onerror = null;
+        pane.ws.onmessage = null;
+        pane.ws.close();
+    }
     if (pane.term) pane.term.dispose();
     if (pane.observer) pane.observer.disconnect();
+    if (pane._bodyEl && pane._onPaste) {
+        pane._bodyEl.removeEventListener('paste', pane._onPaste);
+        pane._bodyEl.removeEventListener('mouseup', pane._onMouseup);
+        pane._bodyEl = null; pane._onPaste = null; pane._onMouseup = null;
+    }
     pane.connected = false;
     pane.serverId = serverId;
     pane.serverName = serverName;
@@ -1251,6 +1263,7 @@ window.connectPaneShell = function(paneIndex, serverId, serverName) {
 
     // Mount xterm.js into the pane body
     const bodyEl = document.getElementById(`ms-pane-body-${paneIndex}`);
+    if (!bodyEl) return;
     bodyEl.innerHTML = '';
 
     const term = new Terminal({
@@ -1283,8 +1296,13 @@ window.connectPaneShell = function(paneIndex, serverId, serverName) {
     pane.fitAddon = fitAddon;
 
     // Paste + mouseup focus fix (same as Task 1, applied to pane bodies too)
-    bodyEl.addEventListener('paste', () => requestAnimationFrame(() => term.focus()));
-    bodyEl.addEventListener('mouseup', () => term.focus());
+    const onPaste = () => requestAnimationFrame(() => term.focus());
+    const onMouseup = () => term.focus();
+    bodyEl.addEventListener('paste', onPaste);
+    bodyEl.addEventListener('mouseup', onMouseup);
+    pane._onPaste = onPaste;
+    pane._onMouseup = onMouseup;
+    pane._bodyEl = bodyEl;
 
     // Open WebSocket — host bash shell (no container)
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -1340,9 +1358,19 @@ window.connectPaneShell = function(paneIndex, serverId, serverName) {
 window.closePaneShell = function(paneIndex) {
     const pane = ms.panes[paneIndex];
     if (!pane) return;
-    if (pane.ws) pane.ws.close();
+    if (pane.ws) {
+        pane.ws.onclose = null;
+        pane.ws.onerror = null;
+        pane.ws.onmessage = null;
+        pane.ws.close();
+    }
     if (pane.term) pane.term.dispose();
     if (pane.observer) pane.observer.disconnect();
+    if (pane._bodyEl && pane._onPaste) {
+        pane._bodyEl.removeEventListener('paste', pane._onPaste);
+        pane._bodyEl.removeEventListener('mouseup', pane._onMouseup);
+    }
+    pane._bodyEl = null; pane._onPaste = null; pane._onMouseup = null;
     pane.sessionId = null; pane.serverId = null; pane.serverName = null;
     pane.term = null; pane.ws = null; pane.fitAddon = null;
     pane.connected = false; pane.observer = null;
