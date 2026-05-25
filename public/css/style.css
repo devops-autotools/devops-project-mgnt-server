@@ -2889,6 +2889,36 @@ tr:hover .btn-tag-edit { opacity: 1; }
     background: rgba(239, 68, 68, 0.12);
 }
 
+/* Pane expand/compress button */
+.ms-pane-expand-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 2px 5px;
+    border-radius: 3px;
+    font-size: 0.75rem;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.ms-pane-expand-btn:hover {
+    color: #60a5fa;
+    background: rgba(59, 130, 246, 0.12);
+}
+
+/* Expanded pane fills the entire grid */
+.ms-grid.ms-has-expanded .ms-pane {
+    display: none;
+}
+
+.ms-grid.ms-has-expanded .ms-pane.ms-pane-expanded {
+    display: flex;
+    grid-column: 1 / -1;
+    grid-row: 1 / -1;
+}
+
 /* Pane terminal body */
 .ms-pane-body {
     flex: 1;

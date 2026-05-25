@@ -1080,6 +1080,7 @@ const ms = {
     active: false,
     minimized: false,
     paneCount: 0,
+    expandedPane: null, // index of expanded pane, or null for normal grid
     // Each entry: { sessionId, serverId, serverName, term, ws, fitAddon, connected, observer }
     panes: [],
     taskbarItemEl: null,
@@ -1140,6 +1141,9 @@ function buildMsPaneHTML(i) {
                 </button>
                 <div class="ms-server-dropdown hidden" id="ms-pane-dropdown-${i}"></div>
             </div>
+            <button class="ms-pane-expand-btn" id="ms-pane-expand-${i}" onclick="toggleMsPaneExpand(${i})" title="Expand pane">
+                <i class="fa-solid fa-expand"></i>
+            </button>
             <button class="ms-pane-close-btn" onclick="closePaneShell(${i})" title="Close pane session">✕</button>
         </div>
         <div class="ms-pane-body" id="ms-pane-body-${i}"></div>
@@ -1183,6 +1187,7 @@ window.closeMultiShell = function() {
     ms.active = false;
     ms.minimized = false;
     ms.paneCount = 0;
+    ms.expandedPane = null;
     ms.panes = [];
     updateMsButton();
 };
@@ -1212,6 +1217,43 @@ function updateMsHeader() {
         if (span) span.textContent = `Multi Shell (${connCount}/${ms.paneCount})`;
     }
 }
+
+window.toggleMsPaneExpand = function(paneIndex) {
+    const grid = document.getElementById('ms-grid');
+    if (!grid) return;
+
+    if (ms.expandedPane === paneIndex) {
+        // Collapse back to grid
+        ms.expandedPane = null;
+        grid.classList.remove('ms-has-expanded');
+        ms.panes.forEach((_, i) => {
+            const paneEl = document.getElementById('ms-pane-' + i);
+            const btn = document.getElementById('ms-pane-expand-' + i);
+            if (paneEl) paneEl.classList.remove('ms-pane-expanded');
+            if (btn) btn.innerHTML = '<i class="fa-solid fa-expand"></i>';
+            if (btn) btn.title = 'Expand pane';
+        });
+        setTimeout(() => ms.panes.forEach(p => { if (p?.fitAddon) p.fitAddon.fit(); }), 50);
+    } else {
+        // Expand this pane
+        ms.expandedPane = paneIndex;
+        grid.classList.add('ms-has-expanded');
+        ms.panes.forEach((_, i) => {
+            const paneEl = document.getElementById('ms-pane-' + i);
+            const btn = document.getElementById('ms-pane-expand-' + i);
+            if (i === paneIndex) {
+                if (paneEl) paneEl.classList.add('ms-pane-expanded');
+                if (btn) btn.innerHTML = '<i class="fa-solid fa-compress"></i>';
+                if (btn) btn.title = 'Restore grid';
+            } else {
+                if (paneEl) paneEl.classList.remove('ms-pane-expanded');
+                if (btn) btn.innerHTML = '<i class="fa-solid fa-expand"></i>';
+                if (btn) btn.title = 'Expand pane';
+            }
+        });
+        setTimeout(() => { if (ms.panes[paneIndex]?.fitAddon) ms.panes[paneIndex].fitAddon.fit(); }, 50);
+    }
+};
 
 window.togglePaneDropdown = function(paneIndex) {
     const dd = document.getElementById(`ms-pane-dropdown-${paneIndex}`);
