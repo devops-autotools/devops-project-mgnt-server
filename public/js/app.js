@@ -142,7 +142,10 @@ function initElements() {
         terminalInput: document.getElementById('terminal-input'),
         terminalPromptLabel: document.getElementById('terminal-prompt-label'),
         terminalTitleLabel: document.getElementById('terminal-title-label'),
-        terminalSuggestions: document.getElementById('terminal-suggestions')
+        terminalSuggestions: document.getElementById('terminal-suggestions'),
+
+        // Multi Shell
+        btnMultiShell: document.getElementById('ms-picker-wrapper'),
     };
 }
 
@@ -298,6 +301,7 @@ async function fetchTags() {
 }
 
 function logoutSuccess() {
+    if (ms.active) closeMultiShell();
     state.authenticated = false;
     el.authContainer.classList.remove('hidden');
     el.mainContainer.classList.add('hidden');
@@ -341,18 +345,22 @@ function switchView(viewId) {
         el.pageTitle.innerText = 'Infrastructure Dashboard';
         el.pageSubtitle.innerText = 'Real-time telemetry, active host statuses, and metric aggregations.';
         el.btnAddServerTrigger.classList.remove('hidden');
+        el.btnMultiShell.classList.add('hidden');
     } else if (viewId === 'page-servers') {
         el.pageTitle.innerText = 'Servers Inventory';
         el.pageSubtitle.innerText = 'Comprehensive server registry, specs, and status actions.';
         el.btnAddServerTrigger.classList.remove('hidden');
+        el.btnMultiShell.classList.remove('hidden');
     } else if (viewId === 'page-server-detail') {
         el.pageTitle.innerText = 'Telemetry Deep-Dive';
         el.pageSubtitle.innerText = 'Granular performance stats, memory analytics, and uptime records.';
         el.btnAddServerTrigger.classList.add('hidden');
+        el.btnMultiShell.classList.add('hidden');
     } else if (viewId === 'page-containers') {
         el.pageTitle.innerText = 'Containers';
         el.pageSubtitle.innerText = 'Docker and Kubernetes containers across all monitored servers.';
         el.btnAddServerTrigger.classList.add('hidden');
+        el.btnMultiShell.classList.add('hidden');
     }
     
     // Refresh display
@@ -921,6 +929,19 @@ function openShell(serverId, serverName, containerId = '', shellMode = '') {
     term.loadAddon(fitAddon);
     term.open(document.getElementById('shell-body-' + sessionId));
     fitAddon.fit();
+    // Restore PTY focus after paste/click so arrow keys send escape sequences
+    // instead of triggering browser text selection (bôi trắng bug)
+    const shellBodyEl = document.getElementById('shell-body-' + sessionId);
+    shellBodyEl.addEventListener('paste', () => requestAnimationFrame(() => term.focus()));
+    // Ctrl+Shift+V is the terminal paste shortcut; xterm handles it via async clipboard
+    // read which may defer focus loss beyond a single rAF — use setTimeout as fallback
+    shellBodyEl.addEventListener('keydown', (e) => {
+        if (e.ctrlKey && e.shiftKey && (e.key === 'v' || e.key === 'V')) {
+            requestAnimationFrame(() => term.focus());
+            setTimeout(() => term.focus(), 50);
+        }
+    }, true);
+    shellBodyEl.addEventListener('mouseup', () => term.focus());
 
     // WebSocket to server bridge
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -1049,6 +1070,384 @@ function makeDraggable(el, handle) {
         document.addEventListener('mouseup', up);
     });
 }
+
+// =========================================================================
+// MULTI SHELL OVERLAY
+// =========================================================================
+
+// ms: singleton state for the Multi Shell overlay
+const ms = {
+    active: false,
+    minimized: false,
+    paneCount: 0,
+    expandedPane: null, // index of expanded pane, or null for normal grid
+    // Each entry: { sessionId, serverId, serverName, term, ws, fitAddon, connected, observer }
+    panes: [],
+    taskbarItemEl: null,
+};
+
+window.toggleMultiShellPicker = function() {
+    if (ms.active) {
+        // Overlay is open fullscreen — button is visually behind it; restore if minimized
+        if (ms.minimized) restoreMultiShell();
+        return;
+    }
+    const dd = document.getElementById('ms-picker-dropdown');
+    const isHidden = dd.classList.contains('hidden');
+    dd.classList.toggle('hidden');
+    if (isHidden) {
+        const close = (e) => {
+            if (!e.target.closest('#ms-picker-wrapper')) {
+                dd.classList.add('hidden');
+                document.removeEventListener('mousedown', close);
+            }
+        };
+        setTimeout(() => document.addEventListener('mousedown', close), 0);
+    }
+};
+
+window.openMultiShell = function(count) {
+    document.getElementById('ms-picker-dropdown').classList.add('hidden');
+    if (ms.active) return;
+
+    ms.paneCount = count;
+    ms.panes = Array.from({ length: count }, () => ({
+        sessionId: null, serverId: null, serverName: null,
+        term: null, ws: null, fitAddon: null, connected: false, observer: null,
+        _bodyEl: null, _onPaste: null, _onCtrlShiftV: null, _onMouseup: null,
+    }));
+    ms.active = true;
+    ms.minimized = false;
+
+    const overlay = document.getElementById('multi-shell-overlay');
+    overlay.classList.remove('hidden');
+
+    const grid = document.getElementById('ms-grid');
+    grid.setAttribute('data-panes', count);
+    grid.innerHTML = Array.from({ length: count }, (_, i) => buildMsPaneHTML(i)).join('');
+
+    updateMsHeader();
+    updateMsButton();
+};
+
+function buildMsPaneHTML(i) {
+    return `
+    <div class="ms-pane" id="ms-pane-${i}">
+        <div class="ms-pane-titlebar">
+            <span class="ms-pane-label">Pane ${i + 1}</span>
+            <div class="ms-server-dropdown-wrap" id="ms-pane-select-wrap-${i}">
+                <button class="ms-pane-server-btn" onclick="togglePaneDropdown(${i})">
+                    Select a server… ▾
+                </button>
+                <div class="ms-server-dropdown hidden" id="ms-pane-dropdown-${i}"></div>
+            </div>
+            <button class="ms-pane-expand-btn" id="ms-pane-expand-${i}" onclick="toggleMsPaneExpand(${i})" title="Expand pane">
+                <i class="fa-solid fa-expand"></i>
+            </button>
+            <button class="ms-pane-close-btn" onclick="closePaneShell(${i})" title="Close pane session">✕</button>
+        </div>
+        <div class="ms-pane-body" id="ms-pane-body-${i}"></div>
+    </div>`;
+}
+
+window.minimizeMultiShell = function() {
+    if (ms.minimized) return;
+    document.getElementById('multi-shell-overlay').classList.add('hidden');
+    ms.minimized = true;
+
+    const connCount = ms.panes.filter(p => p.connected).length;
+    const item = document.createElement('div');
+    item.className = 'taskbar-item ms-taskbar-item';
+    item.id = 'ms-taskbar-item';
+    item.innerHTML = `
+        <i class="fa-solid fa-table-cells"></i>
+        <span>Multi Shell (${connCount}/${ms.paneCount})</span>
+        <button class="taskbar-restore" onclick="restoreMultiShell()">▲</button>
+        <button class="taskbar-close" onclick="closeMultiShell()">✕</button>`;
+    document.getElementById('shell-taskbar').appendChild(item);
+    ms.taskbarItemEl = item;
+    updateMsButton();
+};
+
+window.restoreMultiShell = function() {
+    document.getElementById('multi-shell-overlay').classList.remove('hidden');
+    ms.minimized = false;
+    ms.taskbarItemEl?.remove();
+    ms.taskbarItemEl = null;
+    setTimeout(() => ms.panes.forEach(p => { if (p.fitAddon) p.fitAddon.fit(); }), 50);
+    updateMsButton();
+};
+
+window.closeMultiShell = function() {
+    ms.panes.forEach((_, i) => closePaneShell(i));
+    document.getElementById('multi-shell-overlay').classList.add('hidden');
+    document.getElementById('ms-grid').innerHTML = '';
+    ms.taskbarItemEl?.remove();
+    ms.taskbarItemEl = null;
+    ms.active = false;
+    ms.minimized = false;
+    ms.paneCount = 0;
+    ms.expandedPane = null;
+    ms.panes = [];
+    updateMsButton();
+};
+
+function updateMsButton() {
+    const wrapper = el.btnMultiShell;
+    if (!wrapper) return;
+    const label = document.getElementById('ms-btn-label');
+    const chevron = document.getElementById('ms-chevron');
+    if (ms.active) {
+        if (label) label.textContent = 'Restore Multi Shell';
+        if (chevron) chevron.style.display = 'none';
+    } else {
+        if (label) label.textContent = 'Multi Shell';
+        if (chevron) chevron.style.display = '';
+    }
+}
+
+function updateMsHeader() {
+    const connCount = ms.panes.filter(p => p.connected).length;
+    const paneCountEl = document.getElementById('ms-pane-count');
+    const connCountEl = document.getElementById('ms-connected-count');
+    if (paneCountEl) paneCountEl.textContent = `${ms.paneCount} panes`;
+    if (connCountEl) connCountEl.textContent = `${connCount} connected`;
+    if (ms.taskbarItemEl) {
+        const span = ms.taskbarItemEl.querySelector('span');
+        if (span) span.textContent = `Multi Shell (${connCount}/${ms.paneCount})`;
+    }
+}
+
+window.toggleMsPaneExpand = function(paneIndex) {
+    const grid = document.getElementById('ms-grid');
+    if (!grid) return;
+
+    if (ms.expandedPane === paneIndex) {
+        // Collapse back to grid
+        ms.expandedPane = null;
+        grid.classList.remove('ms-has-expanded');
+        ms.panes.forEach((_, i) => {
+            const paneEl = document.getElementById('ms-pane-' + i);
+            const btn = document.getElementById('ms-pane-expand-' + i);
+            if (paneEl) paneEl.classList.remove('ms-pane-expanded');
+            if (btn) btn.innerHTML = '<i class="fa-solid fa-expand"></i>';
+            if (btn) btn.title = 'Expand pane';
+        });
+        setTimeout(() => ms.panes.forEach(p => { if (p?.fitAddon) p.fitAddon.fit(); }), 50);
+    } else {
+        // Expand this pane
+        ms.expandedPane = paneIndex;
+        grid.classList.add('ms-has-expanded');
+        ms.panes.forEach((_, i) => {
+            const paneEl = document.getElementById('ms-pane-' + i);
+            const btn = document.getElementById('ms-pane-expand-' + i);
+            if (i === paneIndex) {
+                if (paneEl) paneEl.classList.add('ms-pane-expanded');
+                if (btn) btn.innerHTML = '<i class="fa-solid fa-compress"></i>';
+                if (btn) btn.title = 'Restore grid';
+            } else {
+                if (paneEl) paneEl.classList.remove('ms-pane-expanded');
+                if (btn) btn.innerHTML = '<i class="fa-solid fa-expand"></i>';
+                if (btn) btn.title = 'Expand pane';
+            }
+        });
+        setTimeout(() => { if (ms.panes[paneIndex]?.fitAddon) ms.panes[paneIndex].fitAddon.fit(); }, 50);
+    }
+};
+
+window.togglePaneDropdown = function(paneIndex) {
+    const dd = document.getElementById(`ms-pane-dropdown-${paneIndex}`);
+    if (!dd) return;
+    const isHidden = dd.classList.contains('hidden');
+    if (!isHidden) { dd.classList.add('hidden'); return; }
+
+    const now = Date.now();
+    dd.innerHTML = state.servers.length === 0
+        ? `<div class="ms-server-dropdown-item offline">No servers registered</div>`
+        : state.servers.map(s => {
+            const online = s.connected && (now - new Date(s.last_report)) < 15000;
+            const safeId = s.id;  // UUIDs are hex+dashes, safe to interpolate
+            const safeName = escHTML(s.name).replace(/'/g, '&#39;');
+            const onclick = online ? `connectPaneShell(${paneIndex},'${safeId}','${safeName}')` : '';
+            return `<div class="ms-server-dropdown-item ${online ? '' : 'offline'}"
+                ${online ? `onclick="${onclick}"` : ''}
+                title="${escHTML(online ? s.name : 'Server offline')}">
+                <span style="font-size:0.65rem">${online ? '●' : '○'}</span>
+                ${escHTML(s.name)}
+            </div>`;
+        }).join('');
+
+    dd.classList.remove('hidden');
+    const close = (e) => {
+        if (!e.target.closest(`#ms-pane-select-wrap-${paneIndex}`)) {
+            dd.classList.add('hidden');
+            document.removeEventListener('mousedown', close);
+        }
+    };
+    setTimeout(() => document.addEventListener('mousedown', close), 0);
+};
+
+window.connectPaneShell = function(paneIndex, serverId, serverName) {
+    document.getElementById(`ms-pane-dropdown-${paneIndex}`)?.classList.add('hidden');
+
+    const pane = ms.panes[paneIndex];
+    if (!pane) return;
+
+    // Tear down any existing session in this pane
+    if (pane.ws) {
+        pane.ws.onclose = null;
+        pane.ws.onerror = null;
+        pane.ws.onmessage = null;
+        pane.ws.close();
+    }
+    if (pane.term) pane.term.dispose();
+    if (pane.observer) pane.observer.disconnect();
+    if (pane._bodyEl && pane._onPaste) {
+        pane._bodyEl.removeEventListener('paste', pane._onPaste);
+        pane._bodyEl.removeEventListener('keydown', pane._onCtrlShiftV, true);
+        pane._bodyEl.removeEventListener('mouseup', pane._onMouseup);
+        pane._bodyEl = null; pane._onPaste = null; pane._onCtrlShiftV = null; pane._onMouseup = null;
+    }
+    pane.connected = false;
+    pane.serverId = serverId;
+    pane.serverName = serverName;
+
+    const sessionId = genSessionId();
+    pane.sessionId = sessionId;
+
+    // Update the picker button text optimistically
+    const btn = document.querySelector(`#ms-pane-select-wrap-${paneIndex} .ms-pane-server-btn`);
+    if (btn) { btn.textContent = `${serverName} ▾`; btn.classList.remove('connected'); }
+
+    // Mount xterm.js into the pane body
+    const bodyEl = document.getElementById(`ms-pane-body-${paneIndex}`);
+    if (!bodyEl) return;
+    bodyEl.innerHTML = '';
+
+    const term = new Terminal({
+        theme: {
+            background: '#0d1117', foreground: '#e6edf3',
+            cursor: '#58a6ff', cursorAccent: '#0d1117',
+            selectionBackground: '#264f7855',
+            black: '#484f58', brightBlack: '#6e7681',
+            red: '#ff7b72', brightRed: '#ffa198',
+            green: '#3fb950', brightGreen: '#56d364',
+            yellow: '#d29922', brightYellow: '#e3b341',
+            blue: '#58a6ff', brightBlue: '#79c0ff',
+            magenta: '#bc8cff', brightMagenta: '#d2a8ff',
+            cyan: '#39c5cf', brightCyan: '#56d4dd',
+            white: '#b1bac4', brightWhite: '#f0f6fc',
+        },
+        fontFamily: '"Cascadia Code","Fira Code","JetBrains Mono","Consolas",monospace',
+        fontSize: 13,
+        lineHeight: 1.4,
+        cursorBlink: true,
+        scrollback: 5000,
+        allowTransparency: false,
+    });
+
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(bodyEl);
+    fitAddon.fit();
+    pane.term = term;
+    pane.fitAddon = fitAddon;
+
+    // Paste + mouseup focus fix (same as openShell, applied to pane bodies too)
+    const onPaste = () => requestAnimationFrame(() => term.focus());
+    const onCtrlShiftV = (e) => {
+        if (e.ctrlKey && e.shiftKey && (e.key === 'v' || e.key === 'V')) {
+            requestAnimationFrame(() => term.focus());
+            setTimeout(() => term.focus(), 50);
+        }
+    };
+    const onMouseup = () => term.focus();
+    bodyEl.addEventListener('paste', onPaste);
+    bodyEl.addEventListener('keydown', onCtrlShiftV, true);
+    bodyEl.addEventListener('mouseup', onMouseup);
+    pane._onPaste = onPaste;
+    pane._onCtrlShiftV = onCtrlShiftV;
+    pane._onMouseup = onMouseup;
+    pane._bodyEl = bodyEl;
+
+    // Open WebSocket — host bash shell (no container)
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/api/servers/shell/${serverId}/ws/${sessionId}`);
+    ws.binaryType = 'arraybuffer';
+    pane.ws = ws;
+
+    ws.onmessage = (ev) => {
+        if (typeof ev.data === 'string') {
+            try {
+                const msg = JSON.parse(ev.data);
+                if (msg.type === 'ready') {
+                    pane.connected = true;
+                    const b = document.querySelector(`#ms-pane-select-wrap-${paneIndex} .ms-pane-server-btn`);
+                    if (b) b.classList.add('connected');
+                    term.focus();
+                    updateMsHeader();
+                } else if (msg.type === 'error') {
+                    term.write('\r\n\x1b[31m✖ ' + (msg.message || 'Connection error') + '\x1b[0m\r\n');
+                }
+            } catch (_) {}
+        } else {
+            term.write(new Uint8Array(ev.data));
+        }
+    };
+
+    ws.onclose = () => {
+        pane.connected = false;
+        term.write('\r\n\x1b[33m[session closed]\x1b[0m\r\n');
+        const b = document.querySelector(`#ms-pane-select-wrap-${paneIndex} .ms-pane-server-btn`);
+        if (b) b.classList.remove('connected');
+        updateMsHeader();
+    };
+
+    ws.onerror = () => {
+        pane.connected = false;
+        updateMsHeader();
+    };
+
+    const enc = new TextEncoder();
+    term.onData(data => { if (ws.readyState === WebSocket.OPEN) ws.send(enc.encode(data).buffer); });
+    term.onResize(({ rows, cols }) => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', rows, cols }));
+    });
+
+    const obs = new ResizeObserver(() => { if (pane.fitAddon) pane.fitAddon.fit(); });
+    obs.observe(bodyEl);
+    pane.observer = obs;
+
+    updateMsHeader();
+};
+
+window.closePaneShell = function(paneIndex) {
+    const pane = ms.panes[paneIndex];
+    if (!pane) return;
+    if (pane.ws) {
+        pane.ws.onclose = null;
+        pane.ws.onerror = null;
+        pane.ws.onmessage = null;
+        pane.ws.close();
+    }
+    if (pane.term) pane.term.dispose();
+    if (pane.observer) pane.observer.disconnect();
+    if (pane._bodyEl && pane._onPaste) {
+        pane._bodyEl.removeEventListener('paste', pane._onPaste);
+        pane._bodyEl.removeEventListener('keydown', pane._onCtrlShiftV, true);
+        pane._bodyEl.removeEventListener('mouseup', pane._onMouseup);
+    }
+    pane._bodyEl = null; pane._onPaste = null; pane._onCtrlShiftV = null; pane._onMouseup = null;
+    pane.sessionId = null; pane.serverId = null; pane.serverName = null;
+    pane.term = null; pane.ws = null; pane.fitAddon = null;
+    pane.connected = false; pane.observer = null;
+
+    const bodyEl = document.getElementById(`ms-pane-body-${paneIndex}`);
+    if (bodyEl) bodyEl.innerHTML = '';
+    const btn = document.querySelector(`#ms-pane-select-wrap-${paneIndex} .ms-pane-server-btn`);
+    if (btn) { btn.textContent = 'Select a server… ▾'; btn.classList.remove('connected'); }
+    updateMsHeader();
+};
 
 // =========================================================================
 // TAG MANAGEMENT

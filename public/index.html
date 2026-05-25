@@ -11,7 +11,7 @@
     <!-- FontAwesome for Premium Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Stylesheet -->
-    <link rel="stylesheet" href="/css/style.css?v=4">
+    <link rel="stylesheet" href="/css/style.css?v=7">
     <!-- xterm.js — PTY terminal emulator -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
 </head>
@@ -119,6 +119,18 @@
                         <i class="fa-solid fa-plus"></i>
                         <span>Add New Server</span>
                     </button>
+                    <div class="ms-picker-wrapper hidden" id="ms-picker-wrapper">
+                        <button class="btn btn-secondary" id="btn-multi-shell" onclick="toggleMultiShellPicker()">
+                            <i class="fa-solid fa-table-cells"></i>
+                            <span id="ms-btn-label">Multi Shell</span>
+                            <i class="fa-solid fa-chevron-down" id="ms-chevron"></i>
+                        </button>
+                        <div class="ms-picker-dropdown hidden" id="ms-picker-dropdown">
+                            <button onclick="openMultiShell(2)"><i class="fa-solid fa-table-columns"></i> 2 Shells</button>
+                            <button onclick="openMultiShell(4)"><i class="fa-solid fa-table-cells-large"></i> 4 Shells</button>
+                            <button onclick="openMultiShell(8)"><i class="fa-solid fa-border-all"></i> 8 Shells</button>
+                        </div>
+                    </div>
                 </div>
             </header>
 
@@ -599,10 +611,26 @@
         <!-- xterm.js scripts -->
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+    <!-- Multi Shell fullscreen overlay -->
+    <div id="multi-shell-overlay" class="hidden">
+        <div class="ms-header">
+            <div class="ms-header-info">
+                <i class="fa-solid fa-table-cells"></i>
+                <span style="font-weight:600;color:var(--text-primary)">Multi Shell</span>
+                <span class="ms-meta" id="ms-pane-count"></span>
+                <span class="ms-meta" id="ms-connected-count"></span>
+            </div>
+            <div class="ms-header-controls">
+                <button class="ms-ctrl-btn" onclick="minimizeMultiShell()">− Minimize</button>
+                <button class="ms-ctrl-btn ms-ctrl-close" onclick="closeMultiShell()">✕ Close</button>
+            </div>
+        </div>
+        <div class="ms-grid" id="ms-grid"></div>
+    </div>
     <!-- Floating shell windows container (populated by JS) -->
     <div id="shell-windows"></div>
     <!-- Minimized shells taskbar -->
     <div id="shell-taskbar"></div>
-<script src="/js/app.js?v=4"></script>
+<script src="/js/app.js?v=7"></script>
 </body>
 </html>
