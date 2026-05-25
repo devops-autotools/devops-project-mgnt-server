@@ -1074,6 +1074,7 @@ const ms = {
 
 window.toggleMultiShellPicker = function() {
     if (ms.active) {
+        // Overlay is open fullscreen — button is visually behind it; restore if minimized
         if (ms.minimized) restoreMultiShell();
         return;
     }
@@ -1132,6 +1133,7 @@ function buildMsPaneHTML(i) {
 }
 
 window.minimizeMultiShell = function() {
+    if (ms.minimized) return;
     document.getElementById('multi-shell-overlay').classList.add('hidden');
     ms.minimized = true;
 
@@ -1166,6 +1168,7 @@ window.closeMultiShell = function() {
     ms.taskbarItemEl = null;
     ms.active = false;
     ms.minimized = false;
+    ms.paneCount = 0;
     ms.panes = [];
     updateMsButton();
 };
