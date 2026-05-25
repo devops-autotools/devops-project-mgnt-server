@@ -2630,3 +2630,292 @@ tr:hover .btn-tag-edit { opacity: 1; }
     border-color: rgba(35, 134, 54, 0.4);
     color: var(--success);
 }
+
+/* ==========================================================================
+   MULTI SHELL OVERLAY
+   ========================================================================== */
+
+/* Picker button wrapper (shown only on Servers page via switchView) */
+.ms-picker-wrapper {
+    position: relative;
+}
+
+.ms-picker-dropdown {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    min-width: 160px;
+    background: rgba(17, 24, 39, 0.98);
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    border-radius: 10px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+    z-index: 3000;
+    overflow: hidden;
+}
+
+.ms-picker-dropdown button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 10px 16px;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    cursor: pointer;
+    text-align: left;
+    transition: background var(--transition-fast);
+}
+
+.ms-picker-dropdown button:hover {
+    background: rgba(59, 130, 246, 0.15);
+}
+
+/* Fullscreen overlay */
+#multi-shell-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    background: rgba(8, 12, 20, 0.99);
+    display: flex;
+    flex-direction: column;
+}
+
+#multi-shell-overlay.hidden {
+    display: none;
+}
+
+/* Overlay header bar */
+.ms-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    height: 44px;
+    min-height: 44px;
+    background: rgba(17, 24, 39, 0.95);
+    border-bottom: 1px solid rgba(59, 130, 246, 0.2);
+    flex-shrink: 0;
+    gap: 12px;
+}
+
+.ms-header-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.9rem;
+    color: var(--text-muted);
+}
+
+.ms-meta {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.ms-meta:not(:empty)::before {
+    content: '•';
+    margin-right: 8px;
+}
+
+.ms-header-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ms-ctrl-btn {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+    border-radius: 6px;
+    padding: 5px 14px;
+    font-size: 0.82rem;
+    cursor: pointer;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.ms-ctrl-btn:hover {
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.ms-ctrl-close:hover {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: rgba(239, 68, 68, 0.4);
+}
+
+/* Pane grid */
+.ms-grid {
+    flex: 1;
+    display: grid;
+    gap: 2px;
+    background: #000;
+    overflow: hidden;
+}
+
+.ms-grid[data-panes="2"] {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr;
+}
+
+.ms-grid[data-panes="4"] {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+
+.ms-grid[data-panes="8"] {
+    grid-template-columns: 1fr 1fr 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+
+/* Individual pane */
+.ms-pane {
+    display: flex;
+    flex-direction: column;
+    background: rgba(11, 15, 25, 0.98);
+    overflow: hidden;
+    min-width: 0;
+    min-height: 0;
+}
+
+.ms-pane-titlebar {
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    height: 32px;
+    min-height: 32px;
+    background: rgba(17, 24, 39, 0.92);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    flex-shrink: 0;
+    gap: 6px;
+}
+
+.ms-pane-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    font-family: var(--font-heading);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+/* Server picker inside pane titlebar */
+.ms-server-dropdown-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+}
+
+.ms-pane-server-btn {
+    width: 100%;
+    background: rgba(59, 130, 246, 0.08);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    color: var(--text-muted);
+    border-radius: 5px;
+    padding: 3px 10px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+    transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.ms-pane-server-btn:hover {
+    background: rgba(59, 130, 246, 0.18);
+    color: var(--text-primary);
+}
+
+.ms-pane-server-btn.connected {
+    color: #3fb950;
+    border-color: rgba(63, 185, 80, 0.3);
+    background: rgba(63, 185, 80, 0.07);
+}
+
+/* Server picker dropdown */
+.ms-server-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 200px;
+    max-height: 260px;
+    overflow-y: auto;
+    background: rgba(17, 24, 39, 0.98);
+    border: 1px solid rgba(59, 130, 246, 0.25);
+    border-radius: 8px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+    z-index: 2100;
+}
+
+.ms-server-dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    font-size: 0.8rem;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: background var(--transition-fast);
+    white-space: nowrap;
+}
+
+.ms-server-dropdown-item:hover {
+    background: rgba(59, 130, 246, 0.15);
+}
+
+.ms-server-dropdown-item.offline {
+    color: var(--text-muted);
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.ms-server-dropdown-item.offline:hover {
+    background: none;
+}
+
+/* Pane close button */
+.ms-pane-close-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 2px 5px;
+    border-radius: 3px;
+    font-size: 0.8rem;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.ms-pane-close-btn:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.12);
+}
+
+/* Pane terminal body */
+.ms-pane-body {
+    flex: 1;
+    overflow: hidden;
+    min-height: 0;
+}
+
+.ms-pane-body .xterm {
+    height: 100%;
+}
+
+.ms-pane-body .xterm-viewport {
+    overflow-y: auto !important;
+}
+
+/* Multi Shell taskbar item variant */
+.taskbar-item.ms-taskbar-item {
+    background: rgba(59, 130, 246, 0.1);
+    border-color: rgba(59, 130, 246, 0.3);
+}
+
+/* Chevron icon inside Multi Shell picker button */
+#ms-chevron {
+    font-size: 0.7rem;
+    margin-left: 2px;
+}
