@@ -2682,10 +2682,6 @@ tr:hover .btn-tag-edit { opacity: 1; }
     flex-direction: column;
 }
 
-#multi-shell-overlay.hidden {
-    display: none;
-}
-
 /* Overlay header bar */
 .ms-header {
     display: flex;
@@ -2845,7 +2841,7 @@ tr:hover .btn-tag-edit { opacity: 1; }
     border: 1px solid rgba(59, 130, 246, 0.25);
     border-radius: 8px;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
-    z-index: 2100;
+    z-index: 10; /* scoped inside overlay's fixed stacking context */
 }
 
 .ms-server-dropdown-item {
@@ -2898,6 +2894,7 @@ tr:hover .btn-tag-edit { opacity: 1; }
     flex: 1;
     overflow: hidden;
     min-height: 0;
+    background: #0d0d0d;
 }
 
 .ms-pane-body .xterm {
