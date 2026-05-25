@@ -142,7 +142,10 @@ function initElements() {
         terminalInput: document.getElementById('terminal-input'),
         terminalPromptLabel: document.getElementById('terminal-prompt-label'),
         terminalTitleLabel: document.getElementById('terminal-title-label'),
-        terminalSuggestions: document.getElementById('terminal-suggestions')
+        terminalSuggestions: document.getElementById('terminal-suggestions'),
+
+        // Multi Shell
+        btnMultiShell: document.getElementById('ms-picker-wrapper'),
     };
 }
 
@@ -1053,6 +1056,144 @@ function makeDraggable(el, handle) {
         document.addEventListener('mousemove', move);
         document.addEventListener('mouseup', up);
     });
+}
+
+// =========================================================================
+// MULTI SHELL OVERLAY
+// =========================================================================
+
+// ms: singleton state for the Multi Shell overlay
+const ms = {
+    active: false,
+    minimized: false,
+    paneCount: 0,
+    // Each entry: { sessionId, serverId, serverName, term, ws, fitAddon, connected, observer }
+    panes: [],
+    taskbarItemEl: null,
+};
+
+window.toggleMultiShellPicker = function() {
+    if (ms.active) {
+        if (ms.minimized) restoreMultiShell();
+        return;
+    }
+    const dd = document.getElementById('ms-picker-dropdown');
+    const isHidden = dd.classList.contains('hidden');
+    dd.classList.toggle('hidden');
+    if (isHidden) {
+        const close = (e) => {
+            if (!e.target.closest('#ms-picker-wrapper')) {
+                dd.classList.add('hidden');
+                document.removeEventListener('mousedown', close);
+            }
+        };
+        setTimeout(() => document.addEventListener('mousedown', close), 0);
+    }
+};
+
+window.openMultiShell = function(count) {
+    document.getElementById('ms-picker-dropdown').classList.add('hidden');
+    if (ms.active) return;
+
+    ms.paneCount = count;
+    ms.panes = Array.from({ length: count }, () => ({
+        sessionId: null, serverId: null, serverName: null,
+        term: null, ws: null, fitAddon: null, connected: false, observer: null,
+    }));
+    ms.active = true;
+    ms.minimized = false;
+
+    const overlay = document.getElementById('multi-shell-overlay');
+    overlay.classList.remove('hidden');
+
+    const grid = document.getElementById('ms-grid');
+    grid.setAttribute('data-panes', count);
+    grid.innerHTML = Array.from({ length: count }, (_, i) => buildMsPaneHTML(i)).join('');
+
+    updateMsHeader();
+    updateMsButton();
+};
+
+function buildMsPaneHTML(i) {
+    return `
+    <div class="ms-pane" id="ms-pane-${i}">
+        <div class="ms-pane-titlebar">
+            <span class="ms-pane-label">Pane ${i + 1}</span>
+            <div class="ms-server-dropdown-wrap" id="ms-pane-select-wrap-${i}">
+                <button class="ms-pane-server-btn" onclick="togglePaneDropdown(${i})">
+                    Select a server… ▾
+                </button>
+                <div class="ms-server-dropdown hidden" id="ms-pane-dropdown-${i}"></div>
+            </div>
+            <button class="ms-pane-close-btn" onclick="closePaneShell(${i})" title="Close pane session">✕</button>
+        </div>
+        <div class="ms-pane-body" id="ms-pane-body-${i}"></div>
+    </div>`;
+}
+
+window.minimizeMultiShell = function() {
+    document.getElementById('multi-shell-overlay').classList.add('hidden');
+    ms.minimized = true;
+
+    const connCount = ms.panes.filter(p => p.connected).length;
+    const item = document.createElement('div');
+    item.className = 'taskbar-item ms-taskbar-item';
+    item.id = 'ms-taskbar-item';
+    item.innerHTML = `
+        <i class="fa-solid fa-table-cells"></i>
+        <span>Multi Shell (${connCount}/${ms.paneCount})</span>
+        <button class="taskbar-restore" onclick="restoreMultiShell()">▲</button>
+        <button class="taskbar-close" onclick="closeMultiShell()">✕</button>`;
+    document.getElementById('shell-taskbar').appendChild(item);
+    ms.taskbarItemEl = item;
+    updateMsButton();
+};
+
+window.restoreMultiShell = function() {
+    document.getElementById('multi-shell-overlay').classList.remove('hidden');
+    ms.minimized = false;
+    ms.taskbarItemEl?.remove();
+    ms.taskbarItemEl = null;
+    setTimeout(() => ms.panes.forEach(p => { if (p.fitAddon) p.fitAddon.fit(); }), 50);
+    updateMsButton();
+};
+
+window.closeMultiShell = function() {
+    ms.panes.forEach((_, i) => closePaneShell(i));
+    document.getElementById('multi-shell-overlay').classList.add('hidden');
+    document.getElementById('ms-grid').innerHTML = '';
+    ms.taskbarItemEl?.remove();
+    ms.taskbarItemEl = null;
+    ms.active = false;
+    ms.minimized = false;
+    ms.panes = [];
+    updateMsButton();
+};
+
+function updateMsButton() {
+    const wrapper = el.btnMultiShell;
+    if (!wrapper) return;
+    const label = document.getElementById('ms-btn-label');
+    const chevron = document.getElementById('ms-chevron');
+    if (ms.active) {
+        if (label) label.textContent = 'Restore Multi Shell';
+        if (chevron) chevron.style.display = 'none';
+    } else {
+        if (label) label.textContent = 'Multi Shell';
+        if (chevron) chevron.style.display = '';
+    }
+}
+
+function updateMsHeader() {
+    const connCount = ms.panes.filter(p => p.connected).length;
+    const paneCountEl = document.getElementById('ms-pane-count');
+    const connCountEl = document.getElementById('ms-connected-count');
+    if (paneCountEl) paneCountEl.textContent = `${ms.paneCount} panes`;
+    if (connCountEl) connCountEl.textContent = `${connCount} connected`;
+    if (ms.taskbarItemEl) {
+        const span = ms.taskbarItemEl.querySelector('span');
+        if (span) span.textContent = `Multi Shell (${connCount}/${ms.paneCount})`;
+    }
 }
 
 // =========================================================================
