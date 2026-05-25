@@ -1226,14 +1226,20 @@ if [ -f "$PID_FILE" ]; then
     fi
 fi
 
-nohup "$AGENT_FILE" > "$LOG_FILE" 2>&1 &
+nohup "$AGENT_FILE" >> "$LOG_FILE" 2>&1 &
 agent_pid=$!
 echo "$agent_pid" > "$PID_FILE"
+
+# Register auto-start on boot via cron @reboot (no root needed)
+if command -v crontab >/dev/null 2>&1; then
+    ( crontab -l 2>/dev/null | grep -v 'mgnt-agent'; echo "@reboot sleep 10 && \"$AGENT_FILE\" >> \"$LOG_FILE\" 2>&1" ) | crontab -
+fi
 
 echo "========================================================="
 echo " Agent installed and started successfully!"
 echo " PID: $agent_pid"
 echo " Logs: $LOG_FILE"
+echo " Auto-start on boot: enabled (cron @reboot)"
 echo " Dashboard will update in seconds."
 echo "========================================================="
 `, serverName, baseURL, token, strings.TrimSpace(string(caCertPEM)), token, serverHost, config.AgentTLSPort)
@@ -1302,8 +1308,14 @@ sleep 0.5
 mv "$AGENT_TMP" "$INSTALL_DIR/agent"
 
 LOG_FILE="$INSTALL_DIR/agent.log"
-nohup "$INSTALL_DIR/agent" > "$LOG_FILE" 2>&1 &
+nohup "$INSTALL_DIR/agent" >> "$LOG_FILE" 2>&1 &
 echo $! > "$PID_FILE"
+
+# Register auto-start on boot via cron @reboot (no root needed)
+if command -v crontab >/dev/null 2>&1; then
+    ( crontab -l 2>/dev/null | grep -v 'mgnt-agent'; echo "@reboot sleep 10 && \"$INSTALL_DIR/agent\" >> \"$LOG_FILE\" 2>&1" ) | crontab -
+    echo "==> Auto-start on boot registered (cron @reboot)."
+fi
 
 echo "==> Agent started (PID $(cat "$PID_FILE")). Dashboard updates in seconds."
 `, serverName, baseURL, strings.TrimSpace(string(caCertPEM)),
