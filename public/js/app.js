@@ -921,6 +921,11 @@ function openShell(serverId, serverName, containerId = '', shellMode = '') {
     term.loadAddon(fitAddon);
     term.open(document.getElementById('shell-body-' + sessionId));
     fitAddon.fit();
+    // Restore PTY focus after paste/click so arrow keys send escape sequences
+    // instead of triggering browser text selection (bôi trắng bug)
+    const shellBodyEl = document.getElementById('shell-body-' + sessionId);
+    shellBodyEl.addEventListener('paste', () => requestAnimationFrame(() => term.focus()));
+    shellBodyEl.addEventListener('mouseup', () => term.focus());
 
     // WebSocket to server bridge
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
