@@ -1232,7 +1232,7 @@ echo "$agent_pid" > "$PID_FILE"
 
 # Register auto-start on boot via cron @reboot (no root needed)
 if command -v crontab >/dev/null 2>&1; then
-    ( crontab -l 2>/dev/null | grep -v 'mgnt-agent'; echo "@reboot sleep 10 && \"$AGENT_FILE\" >> \"$LOG_FILE\" 2>&1" ) | crontab -
+    ( crontab -l 2>/dev/null | grep -v 'mgnt-agent' || true; echo "@reboot sleep 10 && \"$AGENT_FILE\" >> \"$LOG_FILE\" 2>&1" ) | crontab -
 fi
 
 echo "========================================================="
@@ -1313,7 +1313,7 @@ echo $! > "$PID_FILE"
 
 # Register auto-start on boot via cron @reboot (no root needed)
 if command -v crontab >/dev/null 2>&1; then
-    ( crontab -l 2>/dev/null | grep -v 'mgnt-agent'; echo "@reboot sleep 10 && \"$INSTALL_DIR/agent\" >> \"$LOG_FILE\" 2>&1" ) | crontab -
+    ( crontab -l 2>/dev/null | grep -v 'mgnt-agent' || true; echo "@reboot sleep 10 && \"$INSTALL_DIR/agent\" >> \"$LOG_FILE\" 2>&1" ) | crontab -
     echo "==> Auto-start on boot registered (cron @reboot)."
 fi
 
