@@ -1199,6 +1199,161 @@ function updateMsHeader() {
     }
 }
 
+window.togglePaneDropdown = function(paneIndex) {
+    const dd = document.getElementById(`ms-pane-dropdown-${paneIndex}`);
+    const isHidden = dd.classList.contains('hidden');
+    if (!isHidden) { dd.classList.add('hidden'); return; }
+
+    const now = Date.now();
+    dd.innerHTML = state.servers.length === 0
+        ? `<div class="ms-server-dropdown-item offline">No servers registered</div>`
+        : state.servers.map(s => {
+            const online = s.connected && (now - new Date(s.last_report)) < 15000;
+            const onclick = online ? `connectPaneShell(${paneIndex},'${s.id}','${escHTML(s.name)}')` : '';
+            return `<div class="ms-server-dropdown-item ${online ? '' : 'offline'}"
+                ${online ? `onclick="${onclick}"` : ''}
+                title="${online ? s.name : 'Server offline'}">
+                <span style="font-size:0.65rem">${online ? '●' : '○'}</span>
+                ${escHTML(s.name)}
+            </div>`;
+        }).join('');
+
+    dd.classList.remove('hidden');
+    const close = (e) => {
+        if (!e.target.closest(`#ms-pane-select-wrap-${paneIndex}`)) {
+            dd.classList.add('hidden');
+            document.removeEventListener('mousedown', close);
+        }
+    };
+    setTimeout(() => document.addEventListener('mousedown', close), 0);
+};
+
+window.connectPaneShell = function(paneIndex, serverId, serverName) {
+    document.getElementById(`ms-pane-dropdown-${paneIndex}`)?.classList.add('hidden');
+
+    const pane = ms.panes[paneIndex];
+    if (!pane) return;
+
+    // Tear down any existing session in this pane
+    if (pane.ws) pane.ws.close();
+    if (pane.term) pane.term.dispose();
+    if (pane.observer) pane.observer.disconnect();
+    pane.connected = false;
+    pane.serverId = serverId;
+    pane.serverName = serverName;
+
+    const sessionId = genSessionId();
+    pane.sessionId = sessionId;
+
+    // Update the picker button text optimistically
+    const btn = document.querySelector(`#ms-pane-select-wrap-${paneIndex} .ms-pane-server-btn`);
+    if (btn) { btn.textContent = `${serverName} ▾`; btn.classList.remove('connected'); }
+
+    // Mount xterm.js into the pane body
+    const bodyEl = document.getElementById(`ms-pane-body-${paneIndex}`);
+    bodyEl.innerHTML = '';
+
+    const term = new Terminal({
+        theme: {
+            background: '#0d1117', foreground: '#e6edf3',
+            cursor: '#58a6ff', cursorAccent: '#0d1117',
+            selectionBackground: '#264f7855',
+            black: '#484f58', brightBlack: '#6e7681',
+            red: '#ff7b72', brightRed: '#ffa198',
+            green: '#3fb950', brightGreen: '#56d364',
+            yellow: '#d29922', brightYellow: '#e3b341',
+            blue: '#58a6ff', brightBlue: '#79c0ff',
+            magenta: '#bc8cff', brightMagenta: '#d2a8ff',
+            cyan: '#39c5cf', brightCyan: '#56d4dd',
+            white: '#b1bac4', brightWhite: '#f0f6fc',
+        },
+        fontFamily: '"Cascadia Code","Fira Code","JetBrains Mono","Consolas",monospace',
+        fontSize: 13,
+        lineHeight: 1.4,
+        cursorBlink: true,
+        scrollback: 5000,
+        allowTransparency: false,
+    });
+
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(bodyEl);
+    fitAddon.fit();
+    pane.term = term;
+    pane.fitAddon = fitAddon;
+
+    // Paste + mouseup focus fix (same as Task 1, applied to pane bodies too)
+    bodyEl.addEventListener('paste', () => requestAnimationFrame(() => term.focus()));
+    bodyEl.addEventListener('mouseup', () => term.focus());
+
+    // Open WebSocket — host bash shell (no container)
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/api/servers/shell/${serverId}/ws/${sessionId}`);
+    ws.binaryType = 'arraybuffer';
+    pane.ws = ws;
+
+    ws.onmessage = (ev) => {
+        if (typeof ev.data === 'string') {
+            try {
+                const msg = JSON.parse(ev.data);
+                if (msg.type === 'ready') {
+                    pane.connected = true;
+                    const b = document.querySelector(`#ms-pane-select-wrap-${paneIndex} .ms-pane-server-btn`);
+                    if (b) b.classList.add('connected');
+                    term.focus();
+                    updateMsHeader();
+                } else if (msg.type === 'error') {
+                    term.write('\r\n\x1b[31m✖ ' + (msg.message || 'Connection error') + '\x1b[0m\r\n');
+                }
+            } catch (_) {}
+        } else {
+            term.write(new Uint8Array(ev.data));
+        }
+    };
+
+    ws.onclose = () => {
+        pane.connected = false;
+        term.write('\r\n\x1b[33m[session closed]\x1b[0m\r\n');
+        const b = document.querySelector(`#ms-pane-select-wrap-${paneIndex} .ms-pane-server-btn`);
+        if (b) b.classList.remove('connected');
+        updateMsHeader();
+    };
+
+    ws.onerror = () => {
+        pane.connected = false;
+        updateMsHeader();
+    };
+
+    const enc = new TextEncoder();
+    term.onData(data => { if (ws.readyState === WebSocket.OPEN) ws.send(enc.encode(data).buffer); });
+    term.onResize(({ rows, cols }) => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', rows, cols }));
+    });
+
+    const obs = new ResizeObserver(() => { if (pane.fitAddon) pane.fitAddon.fit(); });
+    obs.observe(bodyEl);
+    pane.observer = obs;
+
+    updateMsHeader();
+};
+
+window.closePaneShell = function(paneIndex) {
+    const pane = ms.panes[paneIndex];
+    if (!pane) return;
+    if (pane.ws) pane.ws.close();
+    if (pane.term) pane.term.dispose();
+    if (pane.observer) pane.observer.disconnect();
+    pane.sessionId = null; pane.serverId = null; pane.serverName = null;
+    pane.term = null; pane.ws = null; pane.fitAddon = null;
+    pane.connected = false; pane.observer = null;
+
+    const bodyEl = document.getElementById(`ms-pane-body-${paneIndex}`);
+    if (bodyEl) bodyEl.innerHTML = '';
+    const btn = document.querySelector(`#ms-pane-select-wrap-${paneIndex} .ms-pane-server-btn`);
+    if (btn) { btn.textContent = 'Select a server… ▾'; btn.classList.remove('connected'); }
+    updateMsHeader();
+};
+
 // =========================================================================
 // TAG MANAGEMENT
 // =========================================================================
