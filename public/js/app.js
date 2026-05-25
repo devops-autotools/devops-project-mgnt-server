@@ -933,6 +933,14 @@ function openShell(serverId, serverName, containerId = '', shellMode = '') {
     // instead of triggering browser text selection (bôi trắng bug)
     const shellBodyEl = document.getElementById('shell-body-' + sessionId);
     shellBodyEl.addEventListener('paste', () => requestAnimationFrame(() => term.focus()));
+    // Ctrl+Shift+V is the terminal paste shortcut; xterm handles it via async clipboard
+    // read which may defer focus loss beyond a single rAF — use setTimeout as fallback
+    shellBodyEl.addEventListener('keydown', (e) => {
+        if (e.ctrlKey && e.shiftKey && (e.key === 'v' || e.key === 'V')) {
+            requestAnimationFrame(() => term.focus());
+            setTimeout(() => term.focus(), 50);
+        }
+    }, true);
     shellBodyEl.addEventListener('mouseup', () => term.focus());
 
     // WebSocket to server bridge
@@ -1105,7 +1113,7 @@ window.openMultiShell = function(count) {
     ms.panes = Array.from({ length: count }, () => ({
         sessionId: null, serverId: null, serverName: null,
         term: null, ws: null, fitAddon: null, connected: false, observer: null,
-        _bodyEl: null, _onPaste: null, _onMouseup: null,
+        _bodyEl: null, _onPaste: null, _onCtrlShiftV: null, _onMouseup: null,
     }));
     ms.active = true;
     ms.minimized = false;
@@ -1254,8 +1262,9 @@ window.connectPaneShell = function(paneIndex, serverId, serverName) {
     if (pane.observer) pane.observer.disconnect();
     if (pane._bodyEl && pane._onPaste) {
         pane._bodyEl.removeEventListener('paste', pane._onPaste);
+        pane._bodyEl.removeEventListener('keydown', pane._onCtrlShiftV, true);
         pane._bodyEl.removeEventListener('mouseup', pane._onMouseup);
-        pane._bodyEl = null; pane._onPaste = null; pane._onMouseup = null;
+        pane._bodyEl = null; pane._onPaste = null; pane._onCtrlShiftV = null; pane._onMouseup = null;
     }
     pane.connected = false;
     pane.serverId = serverId;
@@ -1302,12 +1311,20 @@ window.connectPaneShell = function(paneIndex, serverId, serverName) {
     pane.term = term;
     pane.fitAddon = fitAddon;
 
-    // Paste + mouseup focus fix (same as Task 1, applied to pane bodies too)
+    // Paste + mouseup focus fix (same as openShell, applied to pane bodies too)
     const onPaste = () => requestAnimationFrame(() => term.focus());
+    const onCtrlShiftV = (e) => {
+        if (e.ctrlKey && e.shiftKey && (e.key === 'v' || e.key === 'V')) {
+            requestAnimationFrame(() => term.focus());
+            setTimeout(() => term.focus(), 50);
+        }
+    };
     const onMouseup = () => term.focus();
     bodyEl.addEventListener('paste', onPaste);
+    bodyEl.addEventListener('keydown', onCtrlShiftV, true);
     bodyEl.addEventListener('mouseup', onMouseup);
     pane._onPaste = onPaste;
+    pane._onCtrlShiftV = onCtrlShiftV;
     pane._onMouseup = onMouseup;
     pane._bodyEl = bodyEl;
 
@@ -1375,9 +1392,10 @@ window.closePaneShell = function(paneIndex) {
     if (pane.observer) pane.observer.disconnect();
     if (pane._bodyEl && pane._onPaste) {
         pane._bodyEl.removeEventListener('paste', pane._onPaste);
+        pane._bodyEl.removeEventListener('keydown', pane._onCtrlShiftV, true);
         pane._bodyEl.removeEventListener('mouseup', pane._onMouseup);
     }
-    pane._bodyEl = null; pane._onPaste = null; pane._onMouseup = null;
+    pane._bodyEl = null; pane._onPaste = null; pane._onCtrlShiftV = null; pane._onMouseup = null;
     pane.sessionId = null; pane.serverId = null; pane.serverName = null;
     pane.term = null; pane.ws = null; pane.fitAddon = null;
     pane.connected = false; pane.observer = null;
