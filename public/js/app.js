@@ -301,6 +301,7 @@ async function fetchTags() {
 }
 
 function logoutSuccess() {
+    if (ms.active) closeMultiShell();
     state.authenticated = false;
     el.authContainer.classList.remove('hidden');
     el.mainContainer.classList.add('hidden');
@@ -1215,7 +1216,9 @@ window.togglePaneDropdown = function(paneIndex) {
         ? `<div class="ms-server-dropdown-item offline">No servers registered</div>`
         : state.servers.map(s => {
             const online = s.connected && (now - new Date(s.last_report)) < 15000;
-            const onclick = online ? `connectPaneShell(${paneIndex},'${s.id}',${JSON.stringify(s.name)})` : '';
+            const safeId = s.id;  // UUIDs are hex+dashes, safe to interpolate
+            const safeName = escHTML(s.name).replace(/'/g, '&#39;');
+            const onclick = online ? `connectPaneShell(${paneIndex},'${safeId}','${safeName}')` : '';
             return `<div class="ms-server-dropdown-item ${online ? '' : 'offline'}"
                 ${online ? `onclick="${onclick}"` : ''}
                 title="${escHTML(online ? s.name : 'Server offline')}">
