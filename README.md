@@ -83,6 +83,17 @@ curl -fsSL http://<dashboard>:8080/agent/install2/<token> | bash
 
 The server appears online within seconds. The agent installs to `~/.mgnt-agent/` and runs as the installing user — never root.
 
+### Auto-deploy agent on OpenStack instance creation
+
+If you use OpenStack and want the agent installed automatically the moment a new server boots, paste the following into the **Customization Script** field when creating the instance:
+
+```bash
+#!/bin/bash
+sudo -i -u ubuntu bash -c 'curl -fsSL http://<dashboard>:8080/agent/install2/<token> | bash'
+```
+
+> Replace `<dashboard>` with your mgnt-server IP/hostname and `<token>` with the token generated for this server from the dashboard. The script runs once as the `ubuntu` user on first boot — no manual SSH needed.
+
 ---
 
 ## Configuration
