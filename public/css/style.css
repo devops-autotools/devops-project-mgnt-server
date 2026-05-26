@@ -2754,8 +2754,18 @@ tr:hover .btn-tag-edit { opacity: 1; }
     grid-template-rows: 1fr;
 }
 
+.ms-grid[data-panes="3"] {
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: 1fr;
+}
+
 .ms-grid[data-panes="4"] {
     grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+}
+
+.ms-grid[data-panes="6"] {
+    grid-template-columns: 1fr 1fr 1fr;
     grid-template-rows: 1fr 1fr;
 }
 
