@@ -211,6 +211,15 @@ function setupEventListeners() {
         fetchTelemetry();
     });
 
+    // Global keyboard shortcuts (Ctrl+Shift+1/2/3 = views, Ctrl+Shift+M = Multi Shell)
+    document.addEventListener('keydown', (e) => {
+        if (!e.ctrlKey || !e.shiftKey) return;
+        if (e.code === 'Digit1') { e.preventDefault(); switchView('page-dashboard'); }
+        else if (e.code === 'Digit2') { e.preventDefault(); switchView('page-servers'); }
+        else if (e.code === 'Digit3') { e.preventDefault(); switchView('page-containers'); }
+        else if (e.code === 'KeyM') { e.preventDefault(); toggleMultiShellPicker(); }
+    });
+
 }
 
 // Show custom toast notification
@@ -569,6 +578,9 @@ function renderServersTableView(now) {
                         <button class="btn btn-primary btn-sm" onclick="openTerminalShell('${s.id}','${escHTML(s.name)}')" title="Open Shell">
                             <i class="fa-solid fa-terminal"></i> Shell
                         </button>
+                        <button class="btn btn-secondary btn-sm" onclick="updateAgent('${s.id}','${escHTML(s.name)}','${s.token}')" title="Update Agent">
+                            <i class="fa-solid fa-arrows-rotate"></i>
+                        </button>
                         <button class="btn btn-danger btn-sm" onclick="deleteServer('${s.id}','${escHTML(s.name)}')" title="Delete Server">
                             <i class="fa-solid fa-trash-can"></i>
                         </button>
@@ -695,6 +707,22 @@ function formatRelativeTime(date) {
 }
 
 // --- Delete Server Registry Action ---
+
+window.updateAgent = async function(id, name, token) {
+    if (!confirm(`Update agent on "${name}"?\n\nThe agent will briefly disconnect then reconnect automatically.`)) return;
+    const cmd = `curl -fsSL ${window.location.origin}/agent/install2/${token} | bash`;
+    try {
+        const res = await fetch(`/api/servers/execute/${id}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: cmd })
+        });
+        if (!res.ok) throw new Error();
+        showToast(`Agent update queued — "${name}" will reconnect in ~15s`);
+    } catch {
+        showToast('Failed to queue update command', true);
+    }
+};
 
 async function deleteServer(id, name) {
     if (!confirm(`Are you sure you want to remove server "${name}" from the monitoring dashboard?`)) {
