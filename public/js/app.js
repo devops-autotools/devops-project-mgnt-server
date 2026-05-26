@@ -214,10 +214,10 @@ function setupEventListeners() {
     // Global keyboard shortcuts (Ctrl+Shift+1/2/3 = views, Ctrl+Shift+M = Multi Shell)
     document.addEventListener('keydown', (e) => {
         if (!e.ctrlKey || !e.shiftKey) return;
-        if (e.key === '1') { e.preventDefault(); switchView('page-dashboard'); }
-        else if (e.key === '2') { e.preventDefault(); switchView('page-servers'); }
-        else if (e.key === '3') { e.preventDefault(); switchView('page-containers'); }
-        else if (e.key === 'm' || e.key === 'M') { e.preventDefault(); toggleMultiShellPicker(); }
+        if (e.code === 'Digit1') { e.preventDefault(); switchView('page-dashboard'); }
+        else if (e.code === 'Digit2') { e.preventDefault(); switchView('page-servers'); }
+        else if (e.code === 'Digit3') { e.preventDefault(); switchView('page-containers'); }
+        else if (e.code === 'KeyM') { e.preventDefault(); toggleMultiShellPicker(); }
     });
 
 }
