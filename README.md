@@ -78,7 +78,7 @@ Open `http://localhost:8080`. Password is printed to stdout on first run.
 2. Copy the generated install command and run it on the target server:
 
 ```bash
-curl -fsSL http://<dashboard>:8080/agent/install2/<token> | bash
+curl -fsSL http://<dashboard>:8080/agent/install/<token> | bash
 ```
 
 The server appears online within seconds. The agent installs to `~/.mgnt-agent/` and runs as the installing user — never root.
@@ -89,7 +89,7 @@ If you use OpenStack and want the agent installed automatically the moment a new
 
 ```bash
 #!/bin/bash
-sudo -i -u ubuntu bash -c 'curl -fsSL http://<dashboard>:8080/agent/install2/<token> | bash'
+sudo -i -u ubuntu bash -c 'curl -fsSL http://<dashboard>:8080/agent/install/<token> | bash'
 ```
 
 > Replace `<dashboard>` with your mgnt-server IP/hostname and `<token>` with the token generated for this server from the dashboard. The script runs once as the `ubuntu` user on first boot — no manual SSH needed.
@@ -266,7 +266,7 @@ mgnt-server/
 go run main.go                        # Start on :8080
 
 # Install a test agent
-curl -fsSL http://localhost:8080/agent/install2/<token> | bash
+curl -fsSL http://localhost:8080/agent/install/<token> | bash
 
 # Watch agent log
 tail -f ~/.mgnt-agent/agent.log
